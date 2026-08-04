@@ -1,0 +1,21 @@
+
+PRESET_VALUES:
+  security_compromised: [Y, N]
+  accessibility_status: [Fully Accessible, Inaccessible, Partially Accessible]
+  habitational_status: [Abandoned, Inhabited, Partially Inhabited]
+  reason_for_inaccessibility: [
+    AOGs, Banditry, Cattle Rustling, Kidnapping, Terrain, Banditry/Kidnapping, Banditry/Terrain,
+    Banditry/Kidnapping/Cattle Rustling, Banditry/Kidnapping/Cattle Rustling/Terrain]
+  day_of_activity: ["1", "1_2", "1_2_3", "1_2_3_4", "2", "2_3", "2_3_4", "3", "3_4", "4", NA]
+  urban: [Y, N]
+  rural: [Y, N]
+  scattered: [Y, N]
+  highrisk: [Y, N, NA]
+  slums: [Y, N, NA]
+  densely_populated: [Y, N, NA]
+  hard2reach: [Y, N, NA]
+  border: [Y, N, NA]
+  nomadic: [Y, N, NA]
+  riverine: [Y, N, NA]
+  fulani: [Y, N, NA]
+

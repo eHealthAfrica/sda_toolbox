@@ -1,0 +1,91 @@
+{
+  "mlos": {
+    "Yobe": {
+      "name": "Abatcha Abdulkarim",
+      "email": "abatcha.abdulkarim@ehealthnigeria.org"
+    },
+    "Kwara": {
+      "name": "Adanna  Alex",
+      "email": "adanna.alex@ehealthnigeria.org"
+    },
+    "Kaduna": {
+      "name": "Olusayo Alabi",
+      "email": "olusayo.alabi@ehealthnigeria.org"
+    },
+    "Niger": {
+      "name": "Abubakar Abubakar Sani",
+      "email": "abubakar.asani@ehealthnigeria.org"
+    },
+    "Kebbi": {
+      "name": "Enyinnaya Nwaiwu",
+      "email": "enyinnaya.nwaiwu@ehealthnigeria.org"
+    },
+    "Borno": {
+      "name": "Muhammad Abubakar Mbawaya",
+      "email": "muhammad.mbawaya@ehealthnigeria.org"
+    },
+    "Kano": {
+      "name": "Nasiru Umar,",
+      "email": "nasiru.umar@ehealthnigeria.org"
+    },
+    "Benue": {
+      "name": "Oluwadamilare Akindipe",
+      "email": "oluwadamilare.akindipe@ehealthnigeria.org"
+    },
+    "Sokoto": {
+      "name": "Peter Okeke",
+      "email": "peter.okeke@ehealthnigeria.org"
+    },
+    "Katsina": {
+      "name": "Racheal Olarewaju",
+      "email": "racheal.Olarewaju@ehealthnigeria.org"
+    },
+    "Bauchi": {
+      "name": "Wonderful Oladipupo",
+      "email": "wonderful.oladipupo@ehealthnigeria.org"
+    },
+    "Zamfara": {
+      "name": "Najib Adam",
+      "email": "najib.adam@ehealthnigeria.org"
+    },
+    "Jigawa": {
+      "name": "Babatunde Oladipupo",
+      "email": "babatunde.oladipupo@ehealthnigeria.org"
+    },
+    "FCT": {
+      "name": "Oluwatosin Ilesanmi",
+      "email": "oluwatosin.ilesanmi@ehealthnigeria.org"
+    },
+    "Plateau": {
+      "name": "Benjamin Shaibu",
+      "email": "benjamin.shaibu@ehealthnigeria.org"
+    },
+    "Adamawa": {
+      "name": "Peter Okeke",
+      "email": "peter.okeke@ehealthnigeria.org"
+    },
+    "Nasarawa": {
+      "name": "Nasiru Umar,",
+      "email": "nasiru.umar@ehealthnigeria.org"
+    },
+    "Gombe": {
+      "name": "Abatcha Abdulkarim",
+      "email": "abatcha.abdulkarim@ehealthnigeria.org"
+    },
+    "Kogi": {
+      "name": "Babatunde Oladipupo",
+      "email": "babatunde.oladipupo@ehealthnigeria.org"
+    },
+    "Taraba": {
+      "name": "Nasiru Umar,",
+      "email": "nasiru.umar@ehealthnigeria.org"
+    }
+  },
+
+  "coordinators": [
+    "oluwadamilare.akindipe@ehealthnigeria.org",
+    "fashoto.busayo@ehealthnigeria.org",
+    "adanna.alex@ehealthnigeria.org",
+    "oluwatosin.ilesanmi@ehealthnigeria.org"
+    ]
+}

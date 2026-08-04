@@ -1,0 +1,230 @@
+DATASETS:
+  state_boundary: states
+  lga_boundary: lgas
+  ward_boundary: wards
+
+  buildings_footprint: building_fp
+  grid_3_extent: settlement_extent
+  settlement_extent: ta
+  gridded_settlement_extent: gridded_ta
+
+  bua: built_up_areas
+  ssa: small_settlement_areas
+  ha: hamlet_areas
+
+  db_settlements: master_list_settlement_update_view
+  db_takeoff_points: mlos_takeoffpoint_view
+
+
+THRESHOLDS:
+  INTRA-WARD: 92
+  OVERALL: 95
+
+
+BUFFER_DISTANCE_METERS: 200
+FALLBACK_BUFFER: 100
+KM2DEG: 111.11
+PRJ_EPSG: 32631
+SOURCE_EPSG: 4326
+SLEEP_DURATION_SECS: 10
+HR: 3600
+BUILDING_LIMIT: 2
+AREA_LIMIT: 30
+
+
+SHIFTER:
+  MIN_DISTANCE: 66
+  TARGET_DISTANCE: 68
+  ITERATIONS: 100
+  SHIFT_DISTANCE: 67
+  DIRECTIONS:
+    - right
+    - left
+    - up
+    - down
+    - up-right
+    - up-left
+    - down-right
+    - down-left
+
+
+REGEX:
+  COORD_PATTERN: \b-?\d+\.\d{2,}([eE][-+]?\d+)?\b
+  NUM_PATTERN: \d+
+  WHITE_SPACE: \s+
+  DELIMITER: _
+  TAKEOFF_PREFIX: (?:\btown\b\s+)?
+  TAKEOFF_SUFFIX: (?:\s+office\s+)?(?:\s+[A-Za-z0-9])?\b
+
+
+SET_TYPE:
+  ha: 100
+  ssa: 50
+  bua: 25
+
+
+ABBREVS:
+  SETTLEMENT:
+    Alh: Alhaji
+    Ang: Anguwar
+    Ung: Unguwar
+    Ugw: Unguwan
+
+
+DROPPING:
+  H2H:
+    - Prev_Coverage
+    - visitation
+    - is_cumm
+    - Total
+    - Visited
+    - Not Yet Visited
+    - track_count
+  RES:
+    - geometry
+    - index_right
+    - visitation
+    - is_cumm
+  SHIFTER:
+    - geometry
+    - original_geom
+    - New_Latitude
+    - New_Longitude
+    - Shifted_Longitude
+    - Shifted_Latitude
+    - Is_Too_Close
+
+
+ATTRIBUTE_COLUMNS:
+  Y_N_COLUMNS:
+    - security_compromised
+    - urban
+    - rural
+    - scattered
+    - highrisk
+    - slums
+    - densely_populated
+    - hard2reach
+    - border
+    - nomadic
+    - riverine
+    - fulani
+  NUMERIC_COLUMNS:
+    - set_population
+    - set_target
+    - number_of_household
+    - noncompliant_household
+    - team_code
+  PRESET_COLUMNS:
+   - day_of_activity
+   - border_type
+   - accessibility_status
+   - reasons_for_inaccessibility
+   - habitational_status
+  GUID:
+    MLOS: eha_guid
+    MP: global_id
+
+
+PRESET_VALUES:
+  day_of_activity: ['1', '1_2', '1_2_3', '1_2_3_4', '2', '2_3', '2_3_4', '3', '3_4', '4']
+  border_type: [International, State, LGA, Ward]
+  accessibility_status: [Fully Accessible, Inaccessible, Partially Accessible]
+  reasons_for_inaccessibility: [
+    AOGs, Banditry, Cattle Rustling, Kidnapping, Terrain, Banditry/Kidnapping, Banditry/Terrain,
+    Banditry/Kidnapping/Cattle Rustling, Banditry/Kidnapping/Cattle Rustling/Terrain]
+  habitational_status: [Inhabited, Partially Inhabited, Abandoned, Migrated]
+
+
+REPORTING:
+  VISITATION:
+    Planned: '#4a86e8'
+    Visited: '#38761d'
+    Not Yet Visited: '#f4cccc'
+    Not Visited: '#f4cccc'
+  QC:
+
+
+STATE_CODES:
+  Cross_River: CR
+  Oyo: OY
+  Zamfara: ZA
+  Akwa_Ibom: AK
+  Ondo: ON
+  Rivers: RI
+  Kwara: KW
+  Benue: BE
+  Kogi: KO
+  Anambra: AN
+  Ebonyi: EB
+  Abia: AB
+  Plateau: PL
+  Edo: ED
+  Nasarawa: NA
+  Imo: IM
+  Kano: KN
+  Adamawa: AD
+  Borno: BR
+  Lagos: LA
+  Ogun: OG
+  Bauchi: BA
+  Yobe: YO
+  Delta: DE
+  Ekiti: EK
+  Osun: OS
+  Katsina: KT
+  Fct: FC
+  Gombe: GO
+  Jigawa: JI
+  Taraba: TA
+  Enugu: EN
+  Bayelsa: BY
+  Niger: NI
+  Kebbi: KB
+  Sokoto: SO
+  Kaduna: KD
+
+
+EXCLUSIONS:
+  - globalid
+  - master.id
+  - mlos_id
+  - eha_guid
+
+
+KEYWORDS:
+  EXCLUSION:
+    - exist
+    - unknown
+    - duplicate
+    - migrate
+    - abandoned
+    - state
+    - remove
+    
+
+
+REMAPPERS:
+  TAKE-OFF-POINT:
+    PHC: Primary Health Center
+    HF: Health Facility
+    GH: General Hospital
+    HP: Health Post
+    MCH:
+    MDG:
+    Dispensary:
+    NPI:
+    WCWC:
+    TcHF:
+  MP:
+    urban: urban
+    rural: rural
+    scattered: scattered
+    set_target: population
+    set_pop: set_pop
+    team_code: team
+    day_of_activity: days
+    accessibility_status: settlement_accessibility
+    habitational_status: settlement_habitation
+    take_off_point: take_off_point
+    comment: comment
