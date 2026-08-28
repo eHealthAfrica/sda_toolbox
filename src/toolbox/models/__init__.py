@@ -92,4 +92,5 @@ class TriangulationMethod(Enum):
 
 class Scheme(Enum):
     VISITATION='VISITATION'
+    COVERAGE='COVERAGE'
     QC='QC'

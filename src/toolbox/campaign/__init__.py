@@ -24,6 +24,7 @@ class CampaignDatasets:
             dip_unique_col = 'Unique_Name'
             dip_data = construct_new_unique(self.settlements, dip_unique_col)
             self.settlements = dip_data
+        self._unique_code = dip_unique_col
 
     @property
     def unique_code(self):

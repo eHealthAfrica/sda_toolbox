@@ -99,3 +99,10 @@ class GeomColumns:
             return None
 
         return matched[0]
+
+    @property
+    def not_found(self)-> bool:
+        if self.latitude is None or self.longitude is None:
+            return True
+
+        return False

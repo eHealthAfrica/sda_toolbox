@@ -53,6 +53,7 @@ async def combine_dmp_files(dmp_files: UploadFile, dip: Literal['expand', 'keep'
     """
 
     datasets = extract_and_retrieve_datasets(dmp_files)
+    # Todo: Add a function that splits the outcome into settlements and special places {dict, [df, df]}
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
     
     with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:

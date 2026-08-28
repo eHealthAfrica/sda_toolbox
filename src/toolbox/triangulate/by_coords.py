@@ -44,6 +44,6 @@ def triangulate_by_location(
             print(f'Error!: {e} encountered with {source_name}')
             continue
 
-    settlement_list = pd.concat([settlement_with_geom, settlement_no_geom], ignore_index=True)
+    settlement_list: pd.DataFrame = pd.concat([settlement_with_geom, settlement_no_geom], ignore_index=True)
     settlement_list.drop_duplicates(subset=unique_col, inplace=True)
     return settlement_list

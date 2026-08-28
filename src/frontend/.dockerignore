@@ -1,0 +1,11 @@
+# Mirrors .gitignore — none of these are build input, and node_modules in
+# particular must NOT be copied in: `npm ci` inside the image installs a
+# fresh, Linux-correct node_modules (leaflet/sql.js etc. can carry
+# platform-specific optional deps; a host-installed node_modules copied in
+# verbatim is never valid inside the container).
+node_modules
+dist
+.env
+.env.local
+*.local
+.DS_Store

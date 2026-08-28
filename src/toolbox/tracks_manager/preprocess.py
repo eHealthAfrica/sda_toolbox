@@ -54,12 +54,13 @@ def filter_valid_tracks(default_filter=True):
                     stamp_col = find_column(matched_tracks, 'gps timestamp')
                     time_format = "%m/%d/%Y %H:%M:%S"
                     matched_tracks.loc[:, ['timestamp']] = pd.to_datetime(matched_tracks[stamp_col], format=time_format)
-                    valid_tracks = matched_tracks.loc[
-                        (matched_tracks[speed]<=1) &
-                        (matched_tracks['timestamp'].dt.time() <= time(15, 0, 0))
-                    ]
+                    valid_mask = (
+                        (matched_tracks[speed]<1) &
+                        (matched_tracks['timestamp'].dt.hour>=7) &
+                        (matched_tracks['timestamp'].dt.hour<=16)
+                    )
+                    valid_tracks = matched_tracks[valid_mask].copy()
 
-                    print(f'Valid Tracks Count: {len(valid_tracks):,}')
                     return valid_tracks
 
                 return matched_tracks
@@ -89,10 +90,8 @@ def preprocess_tracks(tracks: gpd.GeoDataFrame, aoi: list[State] | None = None) 
     table_name = CONFIG.get('DATASETS').get('state_boundary')
     states = [state.value for state in aoi] if aoi else None
     query_param = None if states is None else {"statename": states}
-    boundary = ReadDBData(table_name, True).read_data(query_param)
+    boundary: gpd.GeoDataFrame = ReadDBData(table_name, True).read_data(query_param)
     clipped_tracks = SpatialOps.clip_dataset(tracks, boundary)
-    # stamp_col = find_column(tracks, 'gps timestamp')
-    # clipped_tracks.loc[:, ['timestamp']] = pd.to_datetime(clipped_tracks[stamp_col], format="%m/%d/%Y %H:%M:%S")
     if clipped_tracks.empty:
         raise NoRecordsFound('No Records', f'No Tracks within {", ".join(states)}')
 

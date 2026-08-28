@@ -8,14 +8,14 @@ import psycopg2
 import pandas as pd
 import geopandas as gpd
 from fastapi import UploadFile
-from sqlalchemy import create_engine
 from functools import cached_property
+from sqlalchemy import create_engine, text
 from pandas.errors import ParserError, ParserWarning
 
 from toolbox.utils import Credential
 from toolbox.spatial_mgr import GeomColumns
-from toolbox.tools import parse_read_parameters
 from toolbox.spatial_mgr import convert_to_geodata
+from toolbox.tools import parse_read_parameters_ii, parse_read_parameters
 from toolbox.access.read.spatial_handler import ESRIHandler, OSGeoHandler
 from toolbox.exceptions import FileNotFound, NotSupportedError, NoRecordsFound
 
@@ -159,25 +159,42 @@ class ReadDBData(Reader):
         values = None
 
         if params:
-            fields_map, values = parse_read_parameters(params)
+            fields_map, values = parse_read_parameters_ii(params)
             query += f" WHERE {fields_map}"
 
         logging.info(f'Reading Database Table: {self.db_table}')
 
-        if self.is_spatial:
-            data: gpd.GeoDataFrame =  gpd.read_postgis(query, self.engine.connect(), self.geo_col, params=values)
-            data.rename_geometry('geometry', inplace=True) if 'geom' in data.columns else None
+        query = text(query)
+        with self.engine.connect() as conn:
+            if self.is_spatial:
+                data: gpd.GeoDataFrame = gpd.read_postgis(sql=query, con=conn, geom_col=self.geo_col, params=values)
+                data.rename_geometry('geometry', inplace=True) if 'geom' in data.columns else None
 
-        else:
-            data: pd.DataFrame = pd.read_sql(query, self.connect, params=values)
+            else:
+                data: pd.DataFrame = pd.read_sql(query, self.connect, params=values)
 
-        if data.empty:
-            columns = ", ".join([col for col in params.keys()])
-            value_str = ", ".join(val for val in values)
-            raise NoRecordsFound(
-                'No Records found', f'No Records in for {value_str} in {columns} in {self.db_table} was found')
+            if data.empty:
+                columns = ", ".join([col for col in params.keys()])
+                value_str = ", ".join(val for val in values)
+                raise NoRecordsFound(
+                    'No Records found', f'No Records in for {value_str} in {columns} in {self.db_table} was found')
 
-        return data
+            return data
+
+    def record_exists(self, params: dict[str, Any]) -> bool:
+        query = f'SELECT * FROM {self.db_table}'
+        values = None
+
+        if params:
+            fields_map, values = parse_read_parameters(params)
+            query += f" WHERE {fields_map}"
+
+        res: pd.DataFrame = pd.read_sql(query, self.connect, params=values)
+        if res.empty:
+            return False
+
+        return True
+
 
     @cached_property
     def geo_col(self):

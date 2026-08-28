@@ -1,4 +1,9 @@
+from functools import lru_cache
+
 import pandas as pd
+from fuzzywuzzy import process
+
+from toolbox.mlos import AdminColumns
 
 
 def update_reach(row: pd.Series, source_field: str, target_field: str) -> str | None:
@@ -38,3 +43,12 @@ def populate_sources(row: pd.Series, sources: list) -> str | None:
 
     non_null_sources = list(filter(lambda source: pd.notna(source), sources))
     return " | ".join(non_null_sources)
+
+
+@lru_cache
+def compare_standardizer_ii(admin_name: str, admin_names: list) -> str:
+    match = process.extractBests(admin_name, admin_names, score_cutoff=80, limit=1)
+    if not match:
+        return admin_name
+
+    return match[0][0]

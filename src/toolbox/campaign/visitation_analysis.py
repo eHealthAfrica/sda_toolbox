@@ -22,27 +22,28 @@ def prepare_dip_data(dip_data: pd.DataFrame, campaign_day: int) -> pd.DataFrame:
     return dip_data
 
 
-def update_dip_data(campaign_datasets: CampaignDatasets, summary_data: pd.DataFrame,ta_col: str) -> tuple[pd.DataFrame, str]:
+def update_dip_data(campaign_datasets: CampaignDatasets, summary_data: pd.DataFrame, ta_col: str) -> tuple[pd.DataFrame, str]:
 
     logging.info('Setting DIP Visitation Status')
     analysis_day = campaign_datasets.campaign_day.analysis_day
 
     dip_df = prepare_dip_data(campaign_datasets.settlements, analysis_day)
+
     logging.info("Joining DIP to Gridded summary data")
-    updated_dip_data = dip_df.merge(
-        summary_data[['visitation', 'Coverage', 'track_count']],
-        how='left', left_on=campaign_datasets.unique_code, right_on=ta_col
-    )
+    summary_data = summary_data[['visitation', 'Coverage', 'track_count']]
+    summary_data = summary_data[~summary_data.index.duplicated(keep='first')]
+    updated_dip_data = dip_df.merge(summary_data, how='left', left_on=campaign_datasets.unique_code, right_index=True)
+
+    day_col = get_activity_day(updated_dip_data, analysis_day)
+    if not day_col:
+        updated_dip_data[f'day_{analysis_day}'] = np.nan
 
     updated_dip_data = set_cumulative_visitation(updated_dip_data, analysis_day)
 
     logging.info(f"Updating Visitation and Final Coverage for Day {analysis_day}")
-    day_col = get_activity_day(updated_dip_data, analysis_day)
-    if day_col:
-        updated_dip_data[day_col] = updated_dip_data.apply(
-            update_day_visitation, args=(analysis_day, day_col), axis=1)
+    updated_dip_data[day_col] = updated_dip_data.apply(update_day_visitation, args=(analysis_day, day_col), axis=1)
 
-    updated_dip_data['time_spent_mins'] = updated_dip_data['track_count'] * 2
+    updated_dip_data['time_spent_mins'] = updated_dip_data['track_count']
     # updated_dip_data[['Coverage', 'Prev_Coverage']].replace({0: np.nan}, inplace=True)
     updated_dip_data['Coverage'] = updated_dip_data.apply(final_coverage_update, axis=1)
     updated_dip_data.loc[updated_dip_data[

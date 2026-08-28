@@ -35,7 +35,7 @@ def check_admin(row: pd.Series, data_admin: AdminColumns, boundary_admin: AdminC
     if pd.isna(boundary_state_value) and pd.isna([row['latitude'], row['longitude']]).any():
         return None
 
-    if pd.isna(boundary_state_value):
+    if pd.isna(boundary_state_value) or pd.isna(state_value):
         return "Outside State"
 
     if fuzz.partial_ratio(state_value.lower(), boundary_state_value.lower()) <97:
@@ -43,11 +43,17 @@ def check_admin(row: pd.Series, data_admin: AdminColumns, boundary_admin: AdminC
 
     lga_value: str = row[data_admin.lga]
     boundary_lga_value: str = row[boundary_admin.lga]
+    if pd.isna(lga_value) or pd.isna(boundary_lga_value):
+        return "Outside LGA"
+
     if fuzz.token_set_ratio(lga_value.lower(), boundary_lga_value.lower()) <97:
         return "Outside LGA"
 
     ward_value: str = row[data_admin.ward]
     boundary_ward_value: str = row[boundary_admin.ward]
+    if pd.isna(ward_value) or pd.isna(boundary_ward_value):
+        return "Outside Ward"
+
     if fuzz.token_set_ratio(ward_value.lower(), boundary_ward_value.lower()) <97:
         return "Outside Ward"
 

@@ -1,0 +1,68 @@
+/*
+ * Design tokens ported from the approved SDA Toolbox mockup
+ * (sda_toolbox_frontend_design/mockup.html's :root block) so the real app
+ * matches the design that was actually reviewed and signed off, rather than
+ * the placeholder palette this scaffold started with. Token NAMES are kept
+ * as-is (--color-surface, --radius-lg, etc.) since every page component
+ * already references them — only the VALUES change here, plus two tokens
+ * (--color-surface-2, --color-text-secondary) added for the shell, which
+ * needs the mockup's two-surface / two-secondary-text-tone system that the
+ * single-surface page components never needed.
+ */
+:root {
+  --color-bg: #f4f4f1; /* mockup --page */
+  --color-surface: #fcfcfb; /* mockup --surface-1 — card/tile background */
+  --color-surface-2: #ffffff; /* mockup --surface-2 — sidebar/topbar/input background */
+  --color-border: rgba(11, 11, 11, 0.1);
+  --color-text: #0b0b0b; /* mockup --text-primary */
+  --color-text-secondary: #52514e; /* mockup --text-secondary */
+  --color-text-muted: #898781; /* mockup --text-muted */
+  --color-primary: #2a78d6; /* mockup --s1 */
+  --color-primary-dark: #104281; /* mockup --seq-650 */
+  --color-primary-hover: #1c5cab; /* mockup --seq-550, used for btn-primary:hover */
+
+  --color-good: #0ca30c;
+  --color-warning: #fab219;
+  --color-critical: #d03b3b;
+
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  /* The mockup's cards are flat (border only, no drop shadow) — keep the
+     token defined since every card references it, just make it a no-op. */
+  --shadow-sm: none;
+
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  font-weight: 600;
+}
+
+button {
+  font-family: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

@@ -1,19 +1,19 @@
 import re
 import logging
-from typing import List, Literal
 import concurrent.futures
+from typing import List, Literal
 
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 
 from toolbox import CPU_COUNT
+from toolbox.tools import is_empty
 from toolbox.configs import CONFIG
 from toolbox.models import CampaignDay
 from toolbox.spatial_mgr import GeomColumns
 from toolbox.exceptions import DataError, NotFoundError
 from toolbox.mlos.transformers.common import standardize_column_names
-from toolbox.tools import is_empty
 
 
 def update_dip_visitation(dip_data: pd.DataFrame, campaign_day: CampaignDay):
@@ -92,8 +92,8 @@ def update_visitation(row: pd.Series, prev_day_cumm: str | None = 'cumm') -> str
     if any([status=='Visited' for status in stats]):
         return 'Visited'
 
-    if all([pd.isna(status) for status in stats]):
-        return None
+    # if all([pd.isna(status) for status in stats]):
+    #     return None
 
     return 'Not Yet Visited'
 
@@ -191,10 +191,16 @@ def validate_with_buffered_tracks(site_groups: list[pd.DataFrame], unique_code: 
 
 def set_cumulative_visitation(dip_data: pd.DataFrame, campaign_day: int) -> pd.DataFrame:
     logging.info('Setting Final Visitation and Cumulative Visitation to DIP')
-    prev_cumulative = f'day_{campaign_day - 1}_cumm' if campaign_day > 1 else None
-    dip_data['visitation'] = dip_data.apply(update_visitation, args=(prev_cumulative,), axis=1)
-    updated_dip_data = update_cumulative_dip_visitation(dip_data, campaign_day)
-    return updated_dip_data
+
+    cumm_col = f'day_{campaign_day}_cumm'
+    prev_col = f'day_{campaign_day - 1}_cumm' if campaign_day > 1 else None
+
+    visited = dip_data['visitation'] == 'Visited'
+    if prev_col is not None:
+        visited |= (dip_data[prev_col] == 'Visited')
+
+    dip_data[cumm_col] = np.where(visited, 'Visited', 'Not Yet Visited')
+    return dip_data
 
 
 def classify_results(data: pd.DataFrame):
@@ -216,8 +222,8 @@ def classify_coverage(row: pd.Series) -> str:
     ranges = {
         # (0.01, 0.30): 'Very Low Coverage',
         (0.01, 0.50): 'Poorly Covered',
-        (0.50, 0.80): 'Partially Covered',
-        (0.80, 1.0): 'Fully Covered'
+        (0.50, 0.70): 'Partially Covered',
+        (0.70, 1.0): 'Fully Covered'
     }
 
     for range_vals, classification in ranges.items():
@@ -232,7 +238,7 @@ def classify_time_spent(row: pd.Series):
     if is_empty(tracks):
         return np.nan
 
-    time_spent_mins = tracks * 2
+    time_spent_mins = tracks
 
     ranges = {
         (1, 12): '<12 mins',
@@ -246,3 +252,29 @@ def classify_time_spent(row: pd.Series):
             return classification
 
     return '>2 hrs'
+
+
+def reassess_visitation(summary: pd.DataFrame):
+
+    def reassessor(row: pd.Series) -> str:
+        status: str = row['visitation']
+        area: float =  row['area_sqm']
+        tracks: int = row['track_count']
+
+        if area >= 10_000 and tracks >= 30:
+            return "maintain"
+
+        if area < 10_000 and tracks >= 15:
+            return "maintain"
+
+        if status != 'Visited':
+            return "maintain"
+
+        return "reevaluate"
+
+    summary['review'] = summary.apply(reassessor, axis=1)
+    summary['visitation'] = np.where(summary['review'] == 'maintain', summary['visitation'], 'Not Yet Visited')
+    summary['Coverage'] = np.where(summary['review'] == 'maintain', summary['Coverage'], 0)
+    summary['track_count'] = np.where(summary['review'] == 'maintain', summary['track_count'], 0)
+
+    return summary

@@ -1,0 +1,205 @@
+import { useEffect, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
+import type { MlosRecord, ValidationStatus } from '../../types/mlos'
+import { QC_ISSUE_FLAGS } from '../../types/mlos'
+import { UNKNOWN_COLOR, VALIDATION_STATUS_COLORS } from '../../utils/colors'
+import type { DetectedColumns } from '../../utils/columns'
+import Pager from '../common/Pager'
+
+interface QcSettlementListTableProps {
+  records: MlosRecord[]
+  columns: DetectedColumns
+  // When set, records has already been filtered by a chart/card selection
+  // above (MlosQcPage owns the filter state) — show what's active and let
+  // the user clear it from here too, not just by re-clicking the source.
+  filterDescription?: string | null
+  onClearFilter?: () => void
+}
+
+const PAGE_SIZE = 50
+
+function cellValue(record: MlosRecord, column: string | null): string {
+  if (!column) return '—'
+  const raw = record[column]
+  if (raw === null || raw === undefined || raw === '') return '—'
+  return String(raw)
+}
+
+function isPresent(value: unknown): boolean {
+  return value !== null && value !== undefined && String(value).trim() !== ''
+}
+
+const thStyle: CSSProperties = {
+  textAlign: 'left',
+  fontSize: 10.5,
+  textTransform: 'uppercase',
+  letterSpacing: '0.03em',
+  color: 'var(--color-text-muted)',
+  fontWeight: 600,
+  padding: '8px 10px',
+  borderBottom: '1px solid var(--color-border)',
+  whiteSpace: 'nowrap',
+}
+const tdStyle: CSSProperties = {
+  padding: '8px 10px',
+  borderBottom: '1px solid var(--color-border)',
+  fontSize: 12.5,
+}
+
+// Row-level companion to the cards/charts above, for actually working the
+// flagged-record queue rather than just reading aggregate counts.
+export default function QcSettlementListTable({
+  records,
+  columns,
+  filterDescription,
+  onClearFilter,
+}: QcSettlementListTableProps) {
+  const [page, setPage] = useState(0)
+
+  // A new filter selection should land on page 1 of the filtered set, not
+  // wherever the user happened to be scrolled to before selecting it.
+  useEffect(() => {
+    setPage(0)
+  }, [filterDescription])
+
+  const totalPages = Math.max(1, Math.ceil(records.length / PAGE_SIZE))
+  const clampedPage = Math.min(page, totalPages - 1)
+  const pageRecords = useMemo(
+    () => records.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE),
+    [records, clampedPage],
+  )
+
+  return (
+    <div
+      style={{
+        background: 'var(--color-surface)',
+        border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-lg)',
+        boxShadow: 'var(--shadow-sm)',
+        padding: 16,
+        marginBottom: 24,
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, flexWrap: 'wrap', gap: 8 }}>
+        <h3 style={{ fontSize: 14 }}>Settlement list</h3>
+        <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{records.length.toLocaleString()} settlements</div>
+      </div>
+
+      {filterDescription && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            background: '#eaf1fb',
+            border: '1px solid var(--color-primary)',
+            borderRadius: 'var(--radius-md)',
+            padding: '6px 10px',
+            fontSize: 11.5,
+            color: 'var(--color-primary)',
+            marginBottom: 12,
+          }}
+        >
+          <span>
+            Filtered to <b>{filterDescription}</b>
+          </span>
+          {onClearFilter && (
+            <button
+              type="button"
+              onClick={onClearFilter}
+              style={{
+                marginLeft: 'auto',
+                background: 'none',
+                border: 'none',
+                color: 'var(--color-primary)',
+                fontSize: 11.5,
+                fontWeight: 600,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: 0,
+              }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      )}
+
+      {records.length === 0 ? (
+        <div style={{ padding: 40, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>
+          No settlements to list.
+        </div>
+      ) : (
+        <>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>State</th>
+                  <th style={thStyle}>LGA</th>
+                  <th style={thStyle}>Ward</th>
+                  <th style={thStyle}>Settlement</th>
+                  <th style={thStyle}>Validation Status</th>
+                  <th style={thStyle}>Flagged</th>
+                  <th style={thStyle}>Issues</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageRecords.map((record, i) => {
+                  const status = cellValue(record, 'validation_status')
+                  const statusColor = VALIDATION_STATUS_COLORS[status as ValidationStatus]
+                  const flagged = isPresent(record.is_flagged)
+                  const issues = QC_ISSUE_FLAGS.filter((flag) => isPresent(record[flag.key])).map((flag) => flag.label)
+                  return (
+                    <tr key={clampedPage * PAGE_SIZE + i}>
+                      <td style={tdStyle}>{cellValue(record, columns.state)}</td>
+                      <td style={tdStyle}>{cellValue(record, columns.lga)}</td>
+                      <td style={tdStyle}>{cellValue(record, columns.ward)}</td>
+                      <td style={tdStyle}>{cellValue(record, columns.settlement)}</td>
+                      <td style={tdStyle}>
+                        {status !== '—' && (
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              width: 8,
+                              height: 8,
+                              borderRadius: '50%',
+                              background: statusColor ?? UNKNOWN_COLOR,
+                              marginRight: 6,
+                            }}
+                          />
+                        )}
+                        {status}
+                      </td>
+                      <td style={tdStyle}>
+                        <span
+                          style={{
+                            color: flagged ? 'var(--color-critical)' : 'var(--color-text-muted)',
+                            fontWeight: flagged ? 600 : 400,
+                          }}
+                        >
+                          {flagged ? 'Flagged' : '—'}
+                        </span>
+                      </td>
+                      <td style={{ ...tdStyle, fontSize: 11.5, color: 'var(--color-text-muted)' }}>
+                        {issues.length ? issues.join(', ') : '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Pager
+            page={clampedPage}
+            totalPages={totalPages}
+            totalCount={records.length}
+            pageCount={pageRecords.length}
+            onPrev={() => setPage((p) => Math.max(0, p - 1))}
+            onNext={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+          />
+        </>
+      )}
+    </div>
+  )
+}

@@ -3,13 +3,13 @@ import logging
 import pandas as pd
 import geopandas as gpd
 
-from toolbox.access import ReadDBData, DBWriter
-from toolbox.campaign import CoverageDataSet
-from toolbox.mlos import detect_unique_admin_field, construct_new_unique
 from toolbox.models import State
 from toolbox.configs import CONFIG
-from toolbox.campaign.campaign_tools import update_visitation
+from toolbox.campaign import CoverageDataSet
+from toolbox.access import ReadDBData, DBWriter
 from toolbox.tracks_manager.preprocess import preprocess_tracks
+from toolbox.mlos import detect_unique_admin_field, construct_new_unique
+from toolbox.campaign.campaign_tools import update_visitation, reassess_visitation
 
 
 def generate_ta_cumulative_summary(target_area: gpd.GeoDataFrame, unique_col: str) -> pd.DataFrame:
@@ -26,9 +26,9 @@ def generate_ta_cumulative_summary(target_area: gpd.GeoDataFrame, unique_col: st
     target_area.drop_duplicates(subset=['rowid', 'visitation'], inplace=True)
     cum_summary = (
         target_area.groupby(by=[unique_col, 'visitation'])
-        .size()
-        .reset_index(name='count')
-        .pivot_table(values='count', columns='visitation', index=unique_col)
+                   .size()
+                   .reset_index(name='count')
+                   .pivot_table(values='count', columns='visitation', index=unique_col)
     )
 
     logging.info("Calculating Total")
@@ -53,15 +53,14 @@ def count_tracks_within_settlement_extent(
         settlement_extent: gpd.GeoDataFrame, tracks: gpd.GeoDataFrame, unique_col: str) -> pd.DataFrame:
     """Counts the number of tracks that intersect with the settlement extent in the gridded target area"""
     logging.info('Counting Tracks Within Settlement Extent')
-    extent_tracks = settlement_extent.sjoin(tracks, how='left', predicate='intersects', rsuffix='tracks')
-    count = (
-        extent_tracks.groupby(by=unique_col, dropna=True)['index_tracks']
-                    .nunique(dropna=True)
-                    .reset_index()
-                    .rename(columns={'index_tracks': 'track_count'})
-    )
 
-    return count
+    extent_tracks = tracks.sjoin(settlement_extent, how='left', predicate='intersects', rsuffix='tracks')
+    count = extent_tracks.groupby(by=unique_col).size()
+    settlement_extent['track_count'] = settlement_extent[unique_col].map(count).fillna(0).astype(int)
+    settlement_extent =  settlement_extent[[unique_col, 'eha_guid', 'track_count', 'geometry']].to_crs(32632)
+
+    settlement_extent['area_sqm'] = settlement_extent.area
+    return settlement_extent.drop(columns='geometry')
 
 
 def find_and_update_visited_grids(tracks: gpd.GeoDataFrame, target_area: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -101,10 +100,9 @@ def update_data(dataset: pd.DataFrame, table_name: str) -> None:
 
 
 def assess_grid_visitation(tracks: gpd.GeoDataFrame, state_info: State | list[State]) -> CoverageDataSet:
-
     logging.info('Finding Visited Settlement Grids and Generating Summary...')
     datasets: dict = CONFIG['DATASETS']
-    state_names: str | list[str] = state_info.value if isinstance(state_info, State) else [state.value for state in state_info]
+    state_names: str | list[str] = [state_info.value] if isinstance(state_info, State) else [state.value for state in state_info]
     gridded_ta_data = ReadDBData(datasets['gridded_settlement_extent'], True).read_data({'state_name': state_names})
     gridded_ta_col: str = detect_unique_admin_field(gridded_ta_data)
     if not gridded_ta_col:
@@ -131,6 +129,7 @@ def assess_grid_visitation(tracks: gpd.GeoDataFrame, state_info: State | list[St
                                   .set_index(gridded_ta_col)
     )
 
+    updated_cumulative_summary = reassess_visitation(updated_cumulative_summary)
     target_area = ta_data.merge(updated_cumulative_summary['visitation'], how="left", left_on=gridded_ta_col, right_index=True)
 
     update_data(gridded_target_area, datasets['gridded_settlement_extent'])

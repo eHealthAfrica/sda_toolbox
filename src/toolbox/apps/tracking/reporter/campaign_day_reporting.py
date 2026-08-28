@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from toolbox.mlos import get_admin_col
 from toolbox.access.read_mgr import read_dataset
 from toolbox.tools import find_column, detect_number
-from toolbox.reporting import DailyReport, Reporters
+from toolbox.reporting import DailyReport
 from toolbox.tools import write_in_memory_zip
 from toolbox.exceptions import InvalidInputError, ResourcesError
 

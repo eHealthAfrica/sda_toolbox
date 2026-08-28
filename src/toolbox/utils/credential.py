@@ -20,21 +20,26 @@ class Credential:
         self._validate_params(self.__dict__)
 
     def _load_credentials(self):
-        """Loads credentials based on the environment."""
+        """Loads credentials from the environment.
+
+        `load_dotenv()` merges a local `.env` file into `os.environ` when one
+        is present and is a no-op otherwise, so `os.environ.get(...)` below
+        picks up credentials the same way whether they came from a `.env`
+        file (local/dev) or were injected directly (containers, CI, a real
+        deployment) — there's no actual behavioral difference between those
+        two cases once the process environment is populated, so this no
+        longer branches on ENVIRONMENT. (Previously it did branch, and the
+        non-development branch set self.db_name/self.user_name instead of
+        the dataclass's real self.database/self.user fields, silently
+        breaking DB access for any ENVIRONMENT value other than
+        'development' — see git history / DOCKERIZATION_PLAN.md quirk #1.)
+        """
         load_dotenv()
-        if os.getenv('ENVIRONMENT') == 'development':
-            self.password = os.getenv('PASSWORD')
-            self.host = os.getenv('HOST')
-            self.port = os.getenv('PORT')
-            self.database = os.getenv('DB')
-            self.user = os.getenv('USER')
-        else:
-            # In production, assume credentials are set directly as environment variables
-            self.password = os.environ.get('PASSWORD')
-            self.host = os.environ.get('HOST')
-            self.port = os.environ.get('PORT')
-            self.db_name = os.environ.get('DB')
-            self.user_name = os.environ.get('USER')
+        self.password = os.environ.get('PASSWORD')
+        self.host = os.environ.get('HOST')
+        self.port = os.environ.get('PORT')
+        self.database = os.environ.get('DB')
+        self.user = os.environ.get('USER')
 
         # Attempt to convert port to integer if it's a string
         if isinstance(self.port, str) and self.port.isdigit():

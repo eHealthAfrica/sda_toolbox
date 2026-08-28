@@ -9,7 +9,6 @@ from typing import Literal, Any
 from datetime import datetime
 
 import pandas as pd
-from numpy.f2py.crackfortran import param_parse
 from tqdm import tqdm
 
 from toolbox.configs import CONFIG
@@ -43,6 +42,20 @@ def parse_read_parameters(parameters: dict[str, Any]):
     return " AND ".join(fields), tuple(values)
 
 
+def parse_read_parameters_ii(parameters: dict[str, Any]):
+    queries = []
+    values = {}
+    for field, value in parameters.items():
+        placeholder = field.split('_')[0][:3]
+        # value_map = f"({placeholder})" if len(value_ls)>1 else placeholder
+        field_query = f"{field} = ANY(:{placeholder})"
+        queries.append(field_query)
+        values[placeholder] = value if isinstance(value, list) else [value]
+
+    final_queries = " AND ".join(queries)
+    return final_queries, values
+
+
 def get_next_letter(current_letter, restart=False):
     if restart or not current_letter:
         return 'A'
@@ -70,9 +83,10 @@ def convert_to_degrees(value, unit: Literal['meters', 'km']='meters') -> float:
         raise MissingConfiguration('Config not found', 'KM2DEG configuration not found')
 
 
-def generate_output_name(input_file_name: str, ext: str, suffix: str):
+def generate_output_name(input_file_name: str, ext: str, suffix: str=None):
     base_names = input_file_name.split('.')[:-1]
     datestamp = datetime.today().strftime("%Y%m%d")
+    # names = list(filter(lambda x: x is not None, [base_names, suffix, datestamp]))
     return f"{'_'.join(base_names)}_{suffix}_{datestamp}.{ext}"
 
 # @atimer
@@ -86,13 +100,22 @@ async def save_uploaded_file(upload_file: Any, temp_dir, factor:int =1):
     return zip_path
 
 
-def write_in_memory_zip(report: Report, images: dict, *args) -> io.BytesIO:
+def write_in_memory_zip(report: Report, images: dict, **kwargs) -> io.BytesIO:
     """Write Generated Images into a zipped file"""
 
     zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED, False) as zipf:
+    # allowZip64 was hardcoded False here while the outer h2h zip
+    # (toolbox/apps/tracking/h2h_validation.py) that this nested reports.zip
+    # gets embedded into uses allowZip64=True — the inconsistency is a real
+    # bug, not a deliberate size cap: with allowZip64 off, zipfile falls back
+    # to 32-bit size/offset fields, and depending on how many report images
+    # get written (a chart per LGA/ward — see DailyReport.generate_report),
+    # this archive can legitimately need 64-bit fields. A local/small run may
+    # never hit that ceiling, but nothing about this zip is actually meant to
+    # be capped at 4GB / 65535 entries. Matches the outer zip's True.
+    with zipfile.ZipFile(zip_buffer, 'a', zipfile.ZIP_DEFLATED, True) as zipf:
         with tempfile.TemporaryDirectory() as tmp_dir_name:
-            report.writer(images, tmp_dir_name, *args)
+            report.writer(images, tmp_dir_name, **kwargs)
 
             for folder_name, subfolders, filenames in os.walk(tmp_dir_name):
                 for filename in filenames:
@@ -195,3 +218,49 @@ async def read_compiled_data(validated_data_files: Any) -> dict[str, pd.DataFram
         }
 
     return datasets
+
+
+def is_uuid4(series: pd.Series) -> bool:
+    uuid4 = CONFIG['REGEX']['UUID4']
+    regex_pattern = rf"{uuid4}"
+    check = series.str.match(regex_pattern)
+    if not check.any():
+        return False
+
+    check_met = check.shape[0]
+    ratio = check_met / len(series)
+
+    return ratio >= 0.6
+
+
+def detect_settlement_id_field(df: pd.DataFrame):
+    str_cols = [col for col in df.columns if df[col].dtype == "str"]
+    for col in str_cols:
+        if not is_uuid4(df[col]):
+            continue
+
+        return col
+
+    return None
+
+
+def get_visitation_col(df: pd.DataFrame):
+    def review() -> str | None:
+        cols_idx = {}
+        cols = df.columns.tolist()
+        for idx, col in enumerate(cols):
+            if df[col].dtype.name != 'str':
+                continue
+
+            if pd.isna(df[col]).any():
+                continue
+
+            col_values: list[str] = df[col].unique().tolist()
+            if any([value.title() not in ['Visited', 'Not Yet Visited', 'Not Visited'] for value in col_values]):
+                continue
+
+            cols_idx[col] = idx
+
+        return max(cols_idx, key=cols_idx.get) if cols_idx else None
+
+    return review()

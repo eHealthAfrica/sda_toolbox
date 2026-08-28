@@ -1,0 +1,71 @@
+# Normalize line endings for every text file the repo tracks, so Git's
+# behavior on checkout/commit is the same no matter who's cloning (Windows,
+# macOS, Linux) and no matter what wrote the file originally. Without this,
+# Windows Git falls back to its own per-file autocrlf guess (default
+# core.autocrlf=true) and prints "LF will be replaced by CRLF the next time
+# Git touches it" — this file is what removes the guessing.
+#
+# `text=auto` lets Git still skip anything it detects as binary even if it's
+# not explicitly listed below; `eol=lf` pins the *stored* line ending in the
+# repo to LF for everything Git treats as text. Entries below are only for
+# being explicit about intent (and for genuinely binary formats, where the
+# `binary` attribute disables end-of-line conversion entirely, since
+# converting bytes inside a binary file would corrupt it).
+* text=auto eol=lf
+
+# Frontend (src/frontend)
+*.ts     text eol=lf
+*.tsx    text eol=lf
+*.js     text eol=lf
+*.jsx    text eol=lf
+*.mjs    text eol=lf
+*.cjs    text eol=lf
+*.json   text eol=lf
+*.css    text eol=lf
+*.scss   text eol=lf
+*.html   text eol=lf
+*.svg    text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.toml   text eol=lf
+*.md     text eol=lf
+
+# Python backend (src/toolbox)
+*.py     text eol=lf
+*.pyi    text eol=lf
+*.cfg    text eol=lf
+*.ini    text eol=lf
+
+# Docker / shell — these run inside Linux containers even when authored on
+# Windows, so they must stay LF regardless of the author's local checkout.
+*.sh       text eol=lf
+Dockerfile text eol=lf
+
+# Windows-specific scripts, if any get added — kept CRLF on purpose, since
+# that's what native Windows tooling (cmd.exe, PowerShell ISE) expects.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Genuine binary formats — never line-ending-converted, or they'd corrupt.
+# Covers what this app already reads/writes/depends on (GeoPackage/SQLite
+# outputs, Excel workbooks, KMZ archives, fonts, images) plus the usual
+# document/archive formats.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.webp   binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.eot    binary
+*.pdf    binary
+*.zip    binary
+*.gpkg   binary
+*.sqlite binary
+*.db     binary
+*.kmz    binary
+*.xlsx   binary
+*.xls    binary

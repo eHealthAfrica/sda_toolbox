@@ -12,7 +12,7 @@ from toolbox.models import TriangulationMethod, State
 from toolbox.triangulate import triangulating_reached_settlements
 from toolbox.access.read_mgr import read_dataset
 from toolbox.tracks_manager.tr import read_tracks
-from toolbox.mlos import detect_unique_admin_field, construct_new_unique
+from toolbox.mlos import detect_unique_admin_field, construct_new_unique, get_admin_col
 
 router = APIRouter()
 logger(log_name='REACH Analysis')
@@ -21,7 +21,7 @@ logger(log_name='REACH Analysis')
 @atimer
 @router.post('/validation', name='REACH Analysis', tags=['Tracking'])
 async def reach_analysis(
-        planned_settlements: UploadFile, data_sources: UploadFile, state: State,
+        planned_settlements: UploadFile, data_sources: UploadFile,
         tracks: Optional[UploadFile] = Form(None), method: TriangulationMethod = TriangulationMethod.BOTH):
     """
     Conduct Reach analysis using multiple datasets against the settlement list for a state.
@@ -34,8 +34,7 @@ async def reach_analysis(
         external data sources to be used for reach analysis<br>
     # source_names
     #     names of the external data sources used in the order of their inclusion.<br>
-    state: State
-        State for which the analysis is being conducted<br>
+
     method: TriangulationMethod
     tracks: UploadFile
         GTS tracks<br>
@@ -53,6 +52,9 @@ async def reach_analysis(
 
     print('Reading Datasets...')
     mlos_gdf: gpd.GeoDataFrame = await read_dataset(planned_settlements, False)
+    state_col = get_admin_col(mlos_gdf, 'state')
+    state_names = mlos_gdf[state_col].str.strip().str.title().unique().tolist()
+    states = [State[s_name] for s_name in state_names]
     uniquecode = detect_unique_admin_field(mlos_gdf)
     if uniquecode is None:
         uniquecode = 'uniquecode'
@@ -60,11 +62,11 @@ async def reach_analysis(
 
     datasets: dict[str, Any] = await read_compiled_data(data_sources)
     if tracks is not None:
-        datasets['tracks'] = await read_tracks(tracks, None)
+        datasets['GTS'] = await read_tracks(tracks, None)
 
     print('\nStarting REACH Analysis...')
     methods = [method] if method != TriangulationMethod.BOTH else [TriangulationMethod.COORDS, TriangulationMethod.SETTLEMENT]
-    triangulated_list = triangulating_reached_settlements(mlos_gdf, datasets, methods, uniquecode, state)
+    triangulated_list = triangulating_reached_settlements(mlos_gdf, datasets, methods, uniquecode, states)
 
     print('Cleaning Up Results...')
     dropping_cols = ['geometry']

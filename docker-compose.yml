@@ -1,0 +1,104 @@
+networks:
+  sda-toolbox-net:
+    name: sda-toolbox-net
+
+volumes:
+  # Named (Docker-managed) volumes, not host bind mounts, for both of the
+  # app's persistent state dirs. Originally these were `./logs:...` and
+  # `./data:...` bind mounts for host browsability, but on this host Docker
+  # Desktop has no file-sharing permission granted for ANY path under the
+  # repo folder — confirmed when `./logs` hit the exact same "the path ...
+  # is not shared from the host; add it in Settings > Resources > File
+  # Sharing" error `./data` did. Named volumes live inside Docker's own VM
+  # and never need that host permission, so both switched here.
+  #   Bonus for `data` specifically: SQLite's WAL mode (used by
+  #   toolbox/job_tracker/store.py) relies on real POSIX file locking, which
+  #   is unreliable over Docker Desktop's host-filesystem bridge on
+  #   Windows/Mac even once shared — a bind-mounted sqlite file can hit
+  #   spurious "database is locked" errors or, worse, silent corruption. A
+  #   named volume avoids that translation layer entirely.
+  # Downside: neither is directly browsable from Explorer anymore — use
+  # `docker compose exec app tail -f /app/src/toolbox/logs/<file>` /
+  # `docker compose exec app sqlite3 /app/src/toolbox/data/jobs.sqlite3`
+  # (or `docker cp`) to inspect them instead. If you later grant Docker
+  # Desktop file-sharing access to this folder, both can be switched back
+  # to `./logs:...` / `./data:...` bind mounts for host visibility.
+  job-tracker-logs:
+  job-tracker-data:
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sda-toolbox-api:local
+    container_name: sda-toolbox-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # toolbox/utils/logger.py resolves the log directory relative to the
+      # installed package (see Dockerfile comments) — this mounts that exact
+      # in-container path so logs survive `docker compose down`/recreation.
+      # Named volume, not a host bind mount — see the `volumes:` block above
+      # for why.
+      - job-tracker-logs:/app/src/toolbox/logs
+      # Same reasoning, for toolbox/job_tracker/store.py's jobs.sqlite3 (the
+      # Dashboard's Active/Completed/Failed job-history store) — resolved the
+      # same __file__-relative way as logs/ above, so it lands at this same
+      # sibling path. Without this mount, every job history record is lost
+      # on container recreation, defeating the entire point of moving it out
+      # of the old page-reload-wipes-it React tracker.
+      - job-tracker-data:/app/src/toolbox/data
+    networks:
+      - sda-toolbox-net
+    healthcheck:
+      # /docs is FastAPI's auto-generated Swagger UI — always present, no DB
+      # access required, so this reflects "the app booted" rather than
+      # "the database happens to be reachable right now".
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/docs', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    # toolbox.CPU_COUNT = multiprocessing.cpu_count() - 2, computed once at
+    # import time (toolbox/__init__.py) and used as a ThreadPoolExecutor
+    # max_workers value in batch file reads. Uncomment/adjust once you know
+    # the host's core count — fewer than 3 available CPUs makes CPU_COUNT
+    # <= 0 and crashes any batch-read endpoint with
+    # "ValueError: max_workers must be greater than 0" (DOCKERIZATION_PLAN.md,
+    # quirk #4). This limit only caps usage; it doesn't guarantee 3 are
+    # visible to the container — that's a host/orchestrator decision.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "4"
+
+  frontend:
+    build:
+      context: ./src/frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the built JS at build time (see src/frontend/Dockerfile's
+        # comment on this same ARG) — the default matches the `app` service's
+        # own published port above, so a plain `docker compose up` works
+        # out of the box for local use. Override by setting
+        # FRONTEND_API_BASE_URL in the root .env to the real public API URL
+        # for any other deployment (e.g. the shared cloud instance).
+        VITE_API_BASE_URL: ${FRONTEND_API_BASE_URL:-http://localhost:8000}
+    image: sda-toolbox-frontend:local
+    container_name: sda-toolbox-frontend
+    ports:
+      - "3000:80"
+    networks:
+      - sda-toolbox-net
+    depends_on:
+      # Waits for the healthcheck above, not just "container started" — the
+      # frontend is a static bundle so it doesn't actually need the backend
+      # up to serve, but there's no reason for it to come up and immediately
+      # show every page failing if the backend is still mid-boot.
+      app:
+        condition: service_healthy
+    restart: unless-stopped

@@ -8,14 +8,15 @@ from fastapi.responses import StreamingResponse
 from toolbox.utils import logger
 from toolbox.access import read_mgr
 from toolbox.access.export_mgr import add_to_archive
-from toolbox.target_area.generate import generate_settlement_target_area, TADatasets
+from toolbox.target_area.generate import generate_settlement_target_area, TADatasets, Identifier
 
 router = APIRouter()
 logger = logger(log_name='Generate Target Area')
 
 
+
 @router.post('/ta/generate_ta', tags=['Campaign'])
-async def generate_target_area(mlos_file: UploadFile, planned_list: UploadFile = Form(None)) -> StreamingResponse:
+async def generate_target_area(mlos_file: UploadFile, identifier: Identifier = Form(None), planned_list: UploadFile = Form(None)) -> StreamingResponse:
     """
     Generate Gridded Target Area and Voronoi from MLOS settlements and predefined settlement types.
 
@@ -27,6 +28,8 @@ async def generate_target_area(mlos_file: UploadFile, planned_list: UploadFile =
     planned_list: UploadFile
         Subset of Settlement List which Activity tracking. Optional can be Blank.
 
+    identifier: Identifier
+
     Returns
     -------
         FileResponse: Downloadable file containing the generated Gridded Target Area.
@@ -34,10 +37,11 @@ async def generate_target_area(mlos_file: UploadFile, planned_list: UploadFile =
 
     logging.info(f"Generating Settlements Voronoi and Gridded Target Area ")
 
+
     mlos_data = await read_mgr.read_dataset(mlos_file, is_spatial=True)
     planned_data = await read_mgr.read_dataset(planned_list, is_spatial=True) if planned_list else None
 
-    target_area_datasets: TADatasets = generate_settlement_target_area(mlos_data, planned_data)
+    target_area_datasets: TADatasets = generate_settlement_target_area(mlos_data, planned_data, identifier)
 
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'a', zipfile.ZIP_DEFLATED, True) as zipper:

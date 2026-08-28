@@ -1,11 +1,24 @@
+from collections import OrderedDict
+
 import pandas as pd
 
 from toolbox.configs import CONFIG
 from toolbox.models import Scheme
 
 
-def retrieve_color_scheme(values: list, scheme: Scheme)->dict[str, str]:
+def order_scheme_values(color_scheme: dict, scheme: Scheme)->list:
+    scheme_order = {
+        'COVERAGE': ['Fully Covered', 'Partially Covered', 'Poorly Covered', 'No Coverage'],
+        'VISITATION': ['Visited', 'Not Yet Visited', 'Not Visited']
+    }
+
+    scheme_values = scheme_order.get(scheme.value)
+    return [value for value in scheme_values if value in color_scheme]
+
+
+def retrieve_color_scheme(values: list, scheme: Scheme)->dict:
     scheme: dict = CONFIG['REPORTING'][scheme.value]
+
     return {field: scheme.get(field) for field in values}
 
 

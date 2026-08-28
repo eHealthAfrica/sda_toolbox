@@ -1,23 +1,19 @@
 import io
 import logging
-import zipfile
-import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import Any, Optional
 
-import pandas as pd
 import geopandas as gpd
 from fastapi.responses import StreamingResponse
-from fastapi import APIRouter, BackgroundTasks, UploadFile
+from fastapi import APIRouter, BackgroundTasks, UploadFile, Query
 
 from toolbox.utils import atimer
 from toolbox.configs import CONFIG
 from toolbox.access import ReadDBData
-from toolbox.tools import find_column
+from toolbox.spatial_mgr import SpatialOps
 from toolbox.models import State, Extensions
 from toolbox.tracks_manager.tr import read_tracks
-from toolbox.spatial_mgr import SpatialOps
 from toolbox.exceptions import DataError, NoRecordsFound
 
 
@@ -49,7 +45,7 @@ def cleanup_files(temp_dir_object: Any):
 @router.post('/compiler/tracks', tags=['Compiler'])
 async def combine_tracks(
         tracks_path: UploadFile , tracks_extension: Extensions,
-        background_tasks: BackgroundTasks, state: State | None = None, remove_invalid_tracks: bool=True): # noqa
+        background_tasks: BackgroundTasks, states: list[State] | None = Query(default_factory=None), remove_invalid_tracks: bool=True): # noqa
     """
     Reads and Combines individual track files in a directory into a single dataset.
 
@@ -78,15 +74,16 @@ async def combine_tracks(
             apply_filter=remove_invalid_tracks
         )
 
-        stamp_col = find_column(tracks, 'gps timestamp')
-        tracks['timestamp'] = pd.to_datetime(tracks[stamp_col], format="%m/%d/%Y %H:%M:%S")
-        if state:
+        if states:
+            state_names = [state.value for state in states]
             state_boundary_table = CONFIG['DATASETS']['state_boundary']
-            state_boundary = ReadDBData(state_boundary_table, True).read_data({'statename': state.value})
+            state_boundary = ReadDBData(state_boundary_table, True).read_data({'statename': [state_names]})
             tracks = SpatialOps.clip_dataset(tracks, state_boundary)
             if tracks.empty:
-                return NoRecordsFound('No Records', f'No Tracks Fall within {state.value}')
-            print(f"Tracks Count Within {state.value}: {len(tracks):,}")
+                return NoRecordsFound('No Records', f'No Tracks Fall within {", ".join(state_names)}')
+
+            tracks = tracks.sjoin(state_boundary[['geometry', 'statename']], how='left', predicate='intersects')
+            print(f"Tracks Count Within {", ".join(state_names)}: {len(tracks):,}")
 
         print('Saving to GeoPackage Database...')
         buffer = io.BytesIO()

@@ -57,6 +57,7 @@ def atimer(func: Callable[..., Any] = None, *, title: str = None, display: bool=
             display_title = title if title else func.__name__.replace('_', ' ').title()
             if display:
                 print(f'{display_title} Runtime: {execution_time:.2f} seconds')
+
             logging.info(f'{display_title} Runtime: {execution_time:.2f} seconds')
             return result
         return wrapper
