@@ -4,12 +4,11 @@ import pandas as pd
 import geopandas as gpd
 
 from toolbox.models import State
-from toolbox.configs import CONFIG
+from toolbox.access import DBWriter
 from toolbox.campaign import CoverageDataSet
-from toolbox.access import ReadDBData, DBWriter
+from toolbox.campaign.campaign_tools import update_visitation
 from toolbox.tracks_manager.preprocess import preprocess_tracks
-from toolbox.mlos import detect_unique_admin_field, construct_new_unique
-from toolbox.campaign.campaign_tools import update_visitation, reassess_visitation
+from toolbox.campaign.ta_analysis import settlement_voronoi_visitation, gridded_settlement_visitation
 
 
 def generate_ta_cumulative_summary(target_area: gpd.GeoDataFrame, unique_col: str) -> pd.DataFrame:
@@ -101,38 +100,20 @@ def update_data(dataset: pd.DataFrame, table_name: str) -> None:
 
 def assess_grid_visitation(tracks: gpd.GeoDataFrame, state_info: State | list[State]) -> CoverageDataSet:
     logging.info('Finding Visited Settlement Grids and Generating Summary...')
-    datasets: dict = CONFIG['DATASETS']
-    state_names: str | list[str] = [state_info.value] if isinstance(state_info, State) else [state.value for state in state_info]
-    gridded_ta_data = ReadDBData(datasets['gridded_settlement_extent'], True).read_data({'state_name': state_names})
-    gridded_ta_col: str = detect_unique_admin_field(gridded_ta_data)
-    if not gridded_ta_col:
-        gridded_ta_col = 'uniquecode'
-        gridded_ta_data = construct_new_unique(gridded_ta_data, gridded_ta_col)
-
-    ta_data = ReadDBData(datasets['settlement_extent'], True).read_data({'state_name': state_names})
-    ta_col = detect_unique_admin_field(ta_data)
-    if not ta_col:
-        ta_col = 'uniquecode'
-        ta_data = construct_new_unique(ta_data, ta_col)
-
-    if "index_tracks" in gridded_ta_data.columns:
-        gridded_ta_data.drop(columns='index_tracks', inplace=True, errors='ignore')
-
+    state_names: list[str] = [state_info.value] if isinstance(state_info, State) else [state.value for state in state_info]
     clipped_tracks = preprocess_tracks(tracks, state_info)
-    gridded_target_area = find_and_update_visited_grids(clipped_tracks, gridded_ta_data)
-    tracks_count = count_tracks_within_settlement_extent(ta_data, clipped_tracks, gridded_ta_col)
-    cumulative_summary = generate_ta_cumulative_summary(gridded_target_area, gridded_ta_col)
-    updated_cumulative_summary = calculate_coverage(cumulative_summary)
+    updated_cumulative_summary, gridded_ta_col = gridded_settlement_visitation(clipped_tracks, state_names)
+    tracks_count, ta_col = settlement_voronoi_visitation(clipped_tracks, state_names)
     updated_cumulative_summary = (
         updated_cumulative_summary.merge(tracks_count, left_on=gridded_ta_col, right_on=ta_col, how='left')
                                   .fillna(0)
                                   .set_index(gridded_ta_col)
     )
 
-    updated_cumulative_summary = reassess_visitation(updated_cumulative_summary)
-    target_area = ta_data.merge(updated_cumulative_summary['visitation'], how="left", left_on=gridded_ta_col, right_index=True)
+    # updated_cumulative_summary = reassess_visitation(updated_cumulative_summary)
+    # target_area = ta_data.merge(updated_cumulative_summary['visitation'], how="left", left_on=gridded_ta_col, right_index=True)
 
-    update_data(gridded_target_area, datasets['gridded_settlement_extent'])
-    update_data(target_area, datasets['settlement_extent'])
+    # update_data(gridded_target_area, datasets['gridded_settlement_extent'])
+    # update_data(target_area, datasets['settlement_extent'])
 
     return CoverageDataSet(gridded_ta_col, clipped_tracks, updated_cumulative_summary)

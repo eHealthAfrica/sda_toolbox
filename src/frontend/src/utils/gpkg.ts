@@ -5,11 +5,12 @@ import type { SimpleGeometry } from './wkb'
 
 // A GeoPackage (.gpkg) file IS a plain SQLite database (that's the OGC
 // GeoPackage spec) — sql.js (SQLite compiled to WASM) can open the raw bytes
-// directly, no dedicated GPKG parser needed. We read both the attribute
-// columns (state/LGA/ward/settlement/type/row_id/area_sqm/building_count)
-// AND the geometry column, decoding the latter's WKB via ../utils/wkb so the
-// map can render real voronoi/gridded-TA polygons rather than illustrative
-// shapes.
+// directly, no dedicated GPKG parser needed. readGpkgLayer below reads both
+// the attribute columns AND the geometry column (decoding the latter's WKB
+// via ../utils/wkb) — that's what Compiler Tracks (parseTracksGpkg) uses.
+// openGpkgLayer further down is ATTRIBUTE-ONLY (no geometry at all) — that's
+// what Target Area uses now that its map was removed; see the comment above
+// openGpkgLayer for why.
 //
 // ⚠ Unverified against a real backend response: this repo's sandbox has no
 // network access, so `sql.js` could not be installed or exercised against an
@@ -23,9 +24,9 @@ import type { SimpleGeometry } from './wkb'
 //
 // Operational note: sql.js needs its WASM binary served as a static asset,
 // and this module is shared by every page that reads a GeoPackage response
-// (Target Area's parseTargetAreaZip AND Compiler Tracks' parseTracksGpkg —
-// both go through readGpkgLayer below), so a missing/wrong wasm breaks both
-// at once. `npm install` does NOT put it there on its own (sql.js ships the
+// (Target Area's openTargetAreaZip AND Compiler Tracks' parseTracksGpkg),
+// so a missing/wrong wasm breaks both at once. `npm install` does NOT put
+// it there on its own (sql.js ships the
 // wasm inside node_modules, not in this app's own public/), so it has to be
 // copied in by hand — and it's not just one file:
 //
@@ -167,5 +168,102 @@ export async function readGpkgLayer(bytes: Uint8Array, layerNameHint: string): P
     return { columns: attrCols, records, rowCount, geometries }
   } finally {
     db.close()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Batched reader — added for Target Area's large multi-state results, where
+// readGpkgLayer's single unbatched SELECT over every row was found to be the
+// likely actual out-of-memory point (not just rendering). Deliberately a
+// SEPARATE function rather than a change to readGpkgLayer above: Compiler
+// Tracks (parseTracksGpkg) also calls readGpkgLayer and doesn't need this —
+// keeping it additive means Tracks' behavior is untouched.
+//
+// ATTRIBUTE COLUMNS ONLY — no geometry. Target Area's map was removed (its
+// only consumer of decoded polygon geometry — the summary cards/volume chart
+// only ever read attribute records and row counts), so this deliberately
+// never selects or decodes the geometry column at all: no WKB blob in the
+// SQL result, no readGpkgGeometryBlob call, no coordinate-ring arrays held
+// in memory. That's most of what TARGET_AREA_FOOTPRINT_MULTIPLIER in
+// utils/browserMemory.ts used to account for — see that file for the
+// updated (much lower) estimate now that this only ever holds plain
+// string/number rows. The real spatial output is still fully available: the
+// raw response ZIP (untouched by any of this) is what downloads, and it's
+// the actual GeoPackages with real geometry — this function just never
+// loads that geometry into the browser's own heap.
+//
+// Opens the GeoPackage once and keeps it open across multiple readBatch()
+// calls (each a LIMIT/OFFSET query) rather than reopening per batch, so the
+// one-time cost of loading the raw bytes into sql.js's own WASM heap is paid
+// once per layer, not once per batch. Callers MUST call close() when done
+// paging through a layer (including on an error/early-exit path) or that
+// layer's WASM-side Database leaks for the life of the tab.
+
+export interface GpkgLayerHandle {
+  columns: string[]
+  /** Total row count for this layer, from one SELECT COUNT(*) at open time — independent of how many rows any individual readBatch() call has returned so far. */
+  rowCount: number
+  /** Reads rows [offset, offset+limit) via LIMIT/OFFSET. Safe to call with an offset beyond rowCount (returns an empty array). */
+  readBatch(offset: number, limit: number): { records: Record<string, string | number | null>[] }
+  /** Frees the underlying sql.js Database. Idempotent — safe to call more than once. */
+  close(): void
+}
+
+export async function openGpkgLayer(bytes: Uint8Array, layerNameHint: string): Promise<GpkgLayerHandle | null> {
+  const SQL = await loadSqlJs()
+  const db = new SQL.Database(bytes)
+
+  const tableName = resolveTableName(db, layerNameHint)
+  if (!tableName) {
+    db.close()
+    return null
+  }
+
+  const allColumns = tableColumns(db, tableName)
+  // Still resolved, but only to EXCLUDE it from the SELECT below — the
+  // geometry column itself is never read or decoded here.
+  const geometryColumn = resolveGeometryColumn(db, tableName, allColumns)
+  const attributeColumns = allColumns.filter((c) => c !== geometryColumn && !isGeometryColumn(c))
+
+  const countResult = db.exec(`SELECT COUNT(*) FROM "${tableName}"`)
+  const rowCount = countResult[0] ? Number(countResult[0].values[0][0]) : 0
+
+  const selectCols = attributeColumns.map((c) => `"${c}"`).join(', ')
+  const canSelect = attributeColumns.length > 0
+
+  let closed = false
+
+  function readBatch(offset: number, limit: number): { records: Record<string, string | number | null>[] } {
+    if (closed) throw new Error(`readBatch called after close() on GpkgLayerHandle for "${tableName}"`)
+    if (!canSelect || rowCount === 0 || offset >= rowCount) {
+      return { records: [] as Record<string, string | number | null>[] }
+    }
+
+    const dataResult = db.exec(`SELECT ${selectCols} FROM "${tableName}" LIMIT ? OFFSET ?`, [limit, offset])
+    const resultSet = dataResult[0]
+    if (!resultSet) return { records: [] as Record<string, string | number | null>[] }
+
+    const records: Record<string, string | number | null>[] = []
+    resultSet.values.forEach((row) => {
+      const record: Record<string, string | number | null> = {}
+      resultSet.columns.forEach((col, i) => {
+        record[col] = row[i] as string | number | null
+      })
+      records.push(record)
+    })
+
+    return { records }
+  }
+
+  return {
+    columns: attributeColumns,
+    rowCount,
+    readBatch,
+    close() {
+      if (!closed) {
+        closed = true
+        db.close()
+      }
+    },
   }
 }

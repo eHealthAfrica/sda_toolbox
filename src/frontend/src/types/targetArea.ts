@@ -1,5 +1,3 @@
-import type { SimpleGeometry } from '../utils/wkb'
-
 // Mirrors toolbox/models/__init__.py::Identifier — an optional Form field on
 // POST /ta/generate_ta (toolbox/apps/campaign/target_area.py) controlling
 // how the unique settlement identifier is built when the source data
@@ -25,9 +23,24 @@ export interface TargetAreaLayer {
   columns: string[]
   records: TargetAreaRecord[]
   rowCount: number
-  /** Parsed polygon/multipolygon geometry per row, aligned by index with `records` (see utils/wkb.ts) — null where a row's geometry was missing or unparseable. */
-  geometries: (SimpleGeometry | null)[]
+  /**
+   * Set only while a batched load (utils/targetAreaBatchLoader.ts) is still
+   * in progress — the number of rows read into `records` so far, which can
+   * be less than `rowCount` (the server-reported total from
+   * `SELECT COUNT(*)`) until the batch loop finishes or stops early on a
+   * memory warning. Absent once a load is complete, in which case
+   * `records.length === rowCount` as before.
+   */
+  loadedCount?: number
 }
+
+// No geometry field here on purpose — the map that used to render it was
+// removed, and the summary cards/volume chart (the only remaining Target
+// Area UI) only ever read `records`/`rowCount`. utils/gpkg.ts's batched
+// reader no longer even selects the geometry column from the GeoPackage, so
+// there's nothing to hold here. The real spatial output (voronoi/gridded-TA
+// polygons) is unaffected — it's still in the downloadable response ZIP,
+// which this app never needs to decode to show the summary/chart.
 
 // POST /ta/generate_ta always returns `voronoi` + `gridded_ta`; `subset_voronoi`
 // + `gridded_ta_subset` are only present in the ZIP at all if a
@@ -40,4 +53,12 @@ export interface ParsedTargetAreaResult {
   subsetVoronoi: TargetAreaLayer | null
   griddedTaSubset: TargetAreaLayer | null
   hasPlannedList: boolean
+  /**
+   * True once the batched render loop (TargetAreaPage.tsx, via
+   * utils/targetAreaBatchLoader.ts) stopped early because the browser was
+   * approaching its estimated memory limit — some layers above may have
+   * `loadedCount < rowCount`. The raw response ZIP is unaffected and stays
+   * fully downloadable regardless (see TargetAreaPage.tsx's resultBlob).
+   */
+  memoryLimited?: boolean
 }

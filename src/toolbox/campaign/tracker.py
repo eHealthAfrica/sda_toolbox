@@ -1,5 +1,4 @@
 import logging
-import io
 
 import pandas as pd
 
@@ -9,8 +8,6 @@ from toolbox.campaign.campaign_tools import classify_results
 from toolbox.campaign.grids import assess_grid_visitation
 from toolbox.reporting import DailyReport
 from toolbox.models import State, CampaignDay
-from toolbox.tools import write_in_memory_zip
-from toolbox.mlos import get_admin_col
 from toolbox.configs import CONFIG
 from toolbox.utils import atimer
 
@@ -88,7 +85,6 @@ async def settlement_tracking(
 if __name__ == '__main__':
     import geopandas as gpd
     import asyncio
-    import io
 
     folder = "C:\\Workspace\\NEOC\\IBRA\\August Round"
     dip = pd.read_csv(f'{folder}\\Compiled IBRA R2 Settlements.csv')
