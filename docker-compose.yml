@@ -75,6 +75,8 @@ services:
     #   resources:
     #     limits:
     #       cpus: "4"
+    tty: true
+    stdin_open: true
 
   frontend:
     build:

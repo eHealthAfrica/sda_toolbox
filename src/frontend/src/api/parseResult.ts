@@ -3,13 +3,13 @@ import Papa from 'papaparse'
 import type { ParsedResult, SettlementRecord } from '../types/h2h'
 import type { MlosRecord, ParsedMlosResult } from '../types/mlos'
 import type { ParsedReachResult, ReachRecord } from '../types/reach'
-import type { ParsedTargetAreaResult, TargetAreaLayer } from '../types/targetArea'
 import type { MlosOpsRecord, ParsedMlosOpsDataset } from '../types/mlosOps'
 import type { ParsedTracksResult, TrackPoint } from '../types/compilerTracks'
 import { TRACKS_LAYER_NAME } from '../types/compilerTracks'
 import type { DailyReportChartImage, ParsedDailyReportResult } from '../types/dailyReport'
 import type { ContactRecord, ParsedContactAnalysisResult } from '../types/contactAnalysis'
-import { readGpkgLayer } from '../utils/gpkg'
+import { readGpkgLayer, openGpkgLayer } from '../utils/gpkg'
+import type { GpkgLayerHandle } from '../utils/gpkg'
 import { findLatitudeColumnStrict, findLongitudeColumnStrict, findSpeedColumn, findGpsTimestampColumn, toNumber } from '../utils/columns'
 
 /**
@@ -142,44 +142,62 @@ export async function parseReachCsv(blob: Blob, sourceFilename: string): Promise
   }
 }
 
-/**
- * Unzips the target_area_datasets.zip blob returned by POST /ta/generate_ta
- * (toolbox/apps/campaign/target_area.py) and reads its GeoPackage layers.
- *
- * Zip entries have NO file extension (they're literally named "voronoi",
- * "gridded_ta", "subset_voronoi", "gridded_ta_subset" —
- * toolbox/access/export_mgr.py::create_spatial_sqlite / add_to_archive), so
- * this matches by exact entry name rather than a ".csv"/".gpkg" suffix like
- * the other zip-based endpoints. The subset_* entries only exist in the zip
- * at all when a `planned_list` file was posted — their absence (not merely
- * an empty layer) is what "no planned list uploaded" means; see
- * types/targetArea.ts.
- */
-async function readLayerIfPresent(zip: JSZip, entryName: string): Promise<TargetAreaLayer | null> {
-  const entry = zip.file(entryName)
-  if (!entry) return null
-  const bytes = await entry.async('uint8array')
-  const layer = await readGpkgLayer(bytes, entryName)
-  return { columns: layer.columns, records: layer.records, rowCount: layer.rowCount, geometries: layer.geometries }
+// The unbatched, geometry-including target_area_datasets.zip parser that
+// used to live here (parseTargetAreaZip/readLayerIfPresent) was removed —
+// Target Area's map was dropped and its summary cards/chart never needed
+// geometry, so openTargetAreaZip below (attribute-only, batched) replaced
+// it as the sole parse path. See utils/gpkg.ts's openGpkgLayer for where
+// geometry stopped being read at all.
+
+export type TargetAreaLayerKey = 'voronoi' | 'griddedTa' | 'subsetVoronoi' | 'griddedTaSubset'
+
+export interface TargetAreaLayerHandle {
+  key: TargetAreaLayerKey
+  /** Raw byte size of this layer's own GeoPackage entry (before decompression by JSZip) — used to size batches, see utils/browserMemory.ts::estimateTargetAreaBatchRows. */
+  rawBytes: number
+  handle: GpkgLayerHandle
 }
 
-export async function parseTargetAreaZip(blob: Blob): Promise<ParsedTargetAreaResult> {
+export interface OpenTargetAreaZipResult {
+  layers: TargetAreaLayerHandle[]
+  hasPlannedList: boolean
+}
+
+const TARGET_AREA_LAYER_ENTRIES: { key: TargetAreaLayerKey; entryName: string }[] = [
+  { key: 'voronoi', entryName: 'voronoi' },
+  { key: 'griddedTa', entryName: 'gridded_ta' },
+  { key: 'subsetVoronoi', entryName: 'subset_voronoi' },
+  { key: 'griddedTaSubset', entryName: 'gridded_ta_subset' },
+]
+
+/**
+ * Opens the target_area_datasets.zip blob for BATCHED, incremental reading
+ * — used by utils/targetAreaBatchLoader.ts (in turn driven by
+ * TargetAreaPage.tsx) so large multi-state results are read a slice at a
+ * time instead of one giant synchronous pass. This does NOT read any row
+ * data itself — it only unzips, opens each present layer's GeoPackage (via
+ * utils/gpkg.ts::openGpkgLayer, attribute columns only — no geometry), and
+ * returns still-open handles the caller pages through with
+ * handle.readBatch(offset, limit).
+ *
+ * Callers MUST call .handle.close() on every returned layer once done with
+ * it (including on an error/early-exit path) — each open handle holds its
+ * own sql.js Database in the WASM heap until closed.
+ */
+export async function openTargetAreaZip(blob: Blob): Promise<OpenTargetAreaZipResult> {
   const zip = await JSZip.loadAsync(blob)
 
-  const [voronoi, griddedTa, subsetVoronoi, griddedTaSubset] = await Promise.all([
-    readLayerIfPresent(zip, 'voronoi'),
-    readLayerIfPresent(zip, 'gridded_ta'),
-    readLayerIfPresent(zip, 'subset_voronoi'),
-    readLayerIfPresent(zip, 'gridded_ta_subset'),
-  ])
-
-  return {
-    voronoi,
-    griddedTa,
-    subsetVoronoi,
-    griddedTaSubset,
-    hasPlannedList: subsetVoronoi !== null || griddedTaSubset !== null,
+  const layers: TargetAreaLayerHandle[] = []
+  for (const { key, entryName } of TARGET_AREA_LAYER_ENTRIES) {
+    const entry = zip.file(entryName)
+    if (!entry) continue
+    const bytes = await entry.async('uint8array')
+    const handle = await openGpkgLayer(bytes, entryName)
+    if (handle) layers.push({ key, rawBytes: bytes.byteLength, handle })
   }
+
+  const hasPlannedList = layers.some((l) => l.key === 'subsetVoronoi' || l.key === 'griddedTaSubset')
+  return { layers, hasPlannedList }
 }
 
 /**
