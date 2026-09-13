@@ -6,29 +6,22 @@ from toolbox.campaign.visitation_analysis import update_dip_data
 from toolbox.campaign import CampaignDatasets, CoverageDataSet
 from toolbox.campaign.campaign_tools import classify_results
 from toolbox.campaign.grids import assess_grid_visitation
-from toolbox.reporting import DailyReport
+from toolbox.reporting import DailyReport, PostReport
 from toolbox.models import State, CampaignDay
 from toolbox.configs import CONFIG
 from toolbox.utils import atimer
 
 
-def prepare_reports(dip_data: pd.DataFrame, analysis_day: int, day_col: str) -> list:
+def prepare_reports(dip_data: pd.DataFrame, day_col: str) -> list[PostReport]:
 
     daily_reports = DailyReport(
         dip_data,
-        coverage_col='',
+        coverage_col='Settlement Coverage',
        campaign_day_col=day_col,
     )
 
     reports = daily_reports.generate_report()
     return reports
-    # zip_buffer = write_in_memory_zip(
-    #     daily_reports,
-    #     reports,
-    #     analysis_day
-    # )
-    #
-    # return zip_buffer
 
 
 @atimer(title="Gridded Settlement Visitation Analysis", display=True)
@@ -76,7 +69,7 @@ async def settlement_tracking(
 
     if generate_report:
         print(f'Generating Reports for {campaign_datasets.campaign_day.analysis_day}...')
-        report_buffer = prepare_reports(updated_dip_data, campaign_datasets.campaign_day.analysis_day, day_col)
+        report_buffer = prepare_reports(updated_dip_data, day_col)
         campaign_datasets.reports = report_buffer
 
     return campaign_datasets

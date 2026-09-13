@@ -114,14 +114,16 @@ def proximity_analysis(dataset: gpd.GeoDataFrame, admin_column):
 
         issues_counter(proximity_checked, 'proximity_issues')
 
-        return proximity_checked
+        return gpd.GeoDataFrame(proximity_checked)
+
     except KeyError as e:
         raise MissingConfiguration('Config attribute missing', f'{e}')
 
 
-def validate_against_grid3_extent(data: gpd.GeoDataFrame, aoi: State, uniquecode: str):
+def validate_against_grid3_extent(data: gpd.GeoDataFrame, uniquecode: str):
     extent_table = CONFIG['DATASETS']['grid_3_extent']
-    grid_3_extent: gpd.GeoDataFrame = ReadDBData(extent_table, True).read_data({"statename":[aoi.value]})
+    states: list[str] = data['state_name'].unique().tolist()
+    grid_3_extent: gpd.GeoDataFrame = ReadDBData(extent_table, True).read_data({"statename": states})
     grid_3_extent = SpatialOps.check_and_match_projection(grid_3_extent, data)
     intersected: gpd.GeoDataFrame = data.sjoin(grid_3_extent[['geometry']], how='inner', predicate='intersects')
     if intersected.empty:
@@ -135,7 +137,7 @@ def validate_against_grid3_extent(data: gpd.GeoDataFrame, aoi: State, uniquecode
 
 
 @timer
-def run_spatial_checks(data: pd.DataFrame, state: State, geo_columns: GeomColumns, unique_column: str):
+def run_spatial_checks(data: pd.DataFrame, geo_columns: GeomColumns, unique_column: str):
     """
     Runs a Series of Spatial validation Checks. This Includes:
         - Missing Coordinates
@@ -146,9 +148,7 @@ def run_spatial_checks(data: pd.DataFrame, state: State, geo_columns: GeomColumn
     Parameters
     ----------
     data: pd.DataFrame
-        MLoS Data
-    state: State
-        Area of interest
+        MLoS Dataset
     geo_columns: GeomColumns
         Object containing Latitude and Longitude Columns
     unique_column: str
@@ -158,19 +158,20 @@ def run_spatial_checks(data: pd.DataFrame, state: State, geo_columns: GeomColumn
     -------
         gpd.GeoDataFrame
     """
+
     enforced_data: pd.DataFrame = enforce_coordinate_field_type(data, geo_columns)
     missing_geo_checked: pd.DataFrame = find_missing_coordinates(enforced_data, geo_columns)
     data_gdf: gpd.GeoDataFrame = convert_to_geodata(missing_geo_checked, geo_columns)
-    admin_checked = administrative_info_checks(data_gdf, state)
-    grid_3_checked = validate_against_grid3_extent(admin_checked, state, unique_column)
+    admin_checked: gpd.GeoDataFrame = administrative_info_checks(data_gdf)
+    grid_3_checked = validate_against_grid3_extent(admin_checked, unique_column)
     data_with_coords = grid_3_checked[grid_3_checked['no_coordinates'].isna()]
-    proximity_checked = flag_settlements_within_30m(data_with_coords)
+    proximity_checked: gpd.GeoDataFrame = flag_settlements_within_30m(data_with_coords)
     flagged: gpd.GeoDataFrame = proximity_checked.loc[proximity_checked['proximity_issues']]
     if flagged.empty:
         return grid_3_checked
 
     unique_flagged = flagged[unique_column].tolist()
-    proximity_distance_checked= proximity_analysis(flagged, unique_column)
+    proximity_distance_checked = proximity_analysis(flagged, unique_column)
     proximity_distance_checked.to_crs(epsg=4326, inplace=True)
     unflagged_df = grid_3_checked.loc[~grid_3_checked[unique_column].isin(unique_flagged)]
     spatially_checked = pd.concat(

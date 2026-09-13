@@ -194,3 +194,8 @@ def generate_team_dips(dataset: pd.DataFrame, validate: bool=False, allocation_d
     dip_data, template_fields = prepare_dip_data(dataset)
     exports: list[str] = DIPTemplateGenerator(dip_data, template_fields).export_all_teams()
     return {'dip': dip_data}, exports
+
+
+if __name__ == '__main__':
+    settlements = pd.read_excel(r"C:\Workspace\MLoS\PLANFELD\MICROPLANS\NOVEMBER 2025\Kebbi Digitized Microplan NIPDS November 2025.xlsx")
+    generate_team_dips(settlements, False)

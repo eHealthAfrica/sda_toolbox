@@ -4,6 +4,8 @@ import type { AppView } from './components/layout/AppShell'
 import DashboardPage from './components/dashboard/DashboardPage'
 import H2HTrackingPage from './components/h2h/H2HTrackingPage'
 import MlosQcPage from './components/mlos/MlosQcPage'
+import DuplicateCheckerPage from './components/mlos/DuplicateCheckerPage'
+import CoordinateReviewPage from './components/mlos/CoordinateReviewPage'
 import MlosOpsPage from './components/mlosOps/MlosOpsPage'
 import UuidCheckerPage from './components/uuidChecker/UuidCheckerPage'
 import ReachAnalysisPage from './components/reach/ReachAnalysisPage'
@@ -32,6 +34,16 @@ const VIEW_META: Record<AppView, { title: string; subtitle: string }> = {
   'mlos-qc': {
     title: 'MLoS · QC & Validation',
     subtitle: 'POST /qc/validation — comprehensive spatial and attribute QC on a master list of settlements.',
+  },
+  'mlos-duplicate-checker': {
+    title: 'MLoS · Duplicate Checker',
+    subtitle:
+      'POST /duplicate-deep-search/ — find pairs of likely-duplicate settlements within each ward by name similarity and coordinate distance, and record a review decision for each.',
+  },
+  'mlos-coordinate-review': {
+    title: 'MLoS · Coordinate Review',
+    subtitle:
+      'POST /coordinate_review/ — judge whether a settlement’s original coordinate should be kept, using agreement between sources (not a per-source pass/fail score) as the guide for the analyst.',
   },
   'mlos-ops': {
     title: 'MLoS · Standardize / Fixer / Update',
@@ -130,6 +142,12 @@ export default function App() {
       </div>
       <div className={viewClass('mlos-qc', view)}>
         <MlosQcPage />
+      </div>
+      <div className={viewClass('mlos-duplicate-checker', view)}>
+        <DuplicateCheckerPage />
+      </div>
+      <div className={viewClass('mlos-coordinate-review', view)}>
+        <CoordinateReviewPage />
       </div>
       <div className={viewClass('mlos-ops', view)}>
         <MlosOpsPage />

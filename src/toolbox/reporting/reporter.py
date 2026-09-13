@@ -1,9 +1,9 @@
 import os
+import re
 import json
 import logging
 from abc import abstractmethod
-from dataclasses import dataclass
-from typing import Protocol, Optional, Literal, Any
+from typing import Protocol, Literal, Any, Optional
 
 import pandas as pd
 from tqdm import tqdm
@@ -23,20 +23,14 @@ from toolbox.reporting.prep import (
 class PostReport(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     state: str
-    lga: str
-    level: Literal['lga', 'ward']
+    lga: Optional[str]
+    level: Literal['state', 'lga', 'ward']
     figure: Figure
     save_name: str
 
     @field_serializer('figure')
     def serialize_figure(self, figure: Figure) -> dict:
         return json.loads(figure.to_json())
-
-
-# @dataclass
-# class Reporters:
-#     cumulative: Optional[str] = None
-#     day: Optional[str] = None
 
 
 class Report(Protocol):
@@ -58,57 +52,94 @@ class DailyReport:
         from toolbox.mlos import AdminColumns
         self.dataset = dataset
         self.coverage_col = coverage_col
+        self.campaign_day = campaign_day_col
         self.admin = AdminColumns.create_by_search(self.dataset)
+        self.day_value: str = re.search(r'\d+', self.campaign_day, re.IGNORECASE).group(0)
 
-    def generate_report(self) -> list:
-        reports = {}
-        if self.reporters.day:
-            logging.info(f'Generating Report for {self.reporters.day}')
-            day_lga_report = self.generate_lga_reports(self.reporters.day)
-            day_summary_report = self.generate_summary_report(self.reporters.day)
-            day_reports = {'summary': day_summary_report, 'breakdown': day_lga_report}
-            reports['day'] = day_reports
+    def generate_report(self) -> list[PostReport]:
+        logging.info(f'Generating Report for Day {self.day_value}')
+        day_lga_report = self.generate_lga_reports(True)
+        day_summary_report = self.generate_summary_report(True)
 
-        if self.reporters.cumulative:
-            logging.info(f'Generating Report for {self.reporters.cumulative}')
-            cumm_lga_report = self.generate_lga_reports(self.reporters.cumulative)
-            cumm_summary_report = self.generate_summary_report(self.reporters.cumulative)
-            cumulative_reports = {'summary': cumm_summary_report, 'breakdown': cumm_lga_report}
-            reports['cumulative'] = cumulative_reports
+        logging.info(f'Generating Cumulative Report for {self.day_value}')
+        cumm_lga_report = self.generate_lga_reports(False)
+        cumm_summary_report = self.generate_summary_report(False)
+
+        day_reports = day_lga_report + day_summary_report + cumm_lga_report + cumm_summary_report
+        return day_reports
 
         return reports
 
-    def generate_summary_report(self, report_col: str):
-        report_values = get_report_values(self.dataset, report_col, True)
-        # report_values = ['Planned'] + report_values
-        color_map = retrieve_color_scheme(report_values, Scheme.COVERAGE)
-        summary_report_data = generate_summary_data(self.dataset, report_col).fillna(0)
-        summary_report_data.loc[-1] = ['Planned', summary_report_data['count'].sum()]
-        summary_report_data.index = summary_report_data.index + 1
-        summary_report_data.sort_index(inplace=True)
+    def generate_summary_report(self, subset: bool) -> list[PostReport]:
+        qualifier = 'Cumulative'
+        data = self.dataset.copy()
+        if subset:
+            qualifier = 'Daily'
+            data = data.loc[data[self.campaign_day].notnull()]
 
-        chart_report: Figure =  make_bar_chart(summary_report_data, report_col, 'count', color_map, color=report_col, width=800)
-        chart_report: Figure = stylize(chart_report)
-        # chart_report.write_image(rf'C:\Users\richa\Downloads\{report_col}_summary.png')
-        return chart_report
+        summary_reports: list[PostReport] = []
+        states: list[str] = data[self.admin.state].unique().tolist()
+        for state in states:
+            state_lga_data = data.loc[data[self.admin.state]==state]
+            report_values = get_report_values(state_lga_data, self.coverage_col, True)
+            color_map = retrieve_color_scheme(report_values, Scheme.COVERAGE)
 
-    def generate_lga_reports(self, report_col: str):
-        report_values = get_report_values(self.dataset, report_col, True)
-        # report_values = ['Planned'] + report_values
-        color_map = retrieve_color_scheme(report_values, Scheme.COVERAGE)
-        lga_report_data = generate_breakdown_data(self.dataset, self.admin.lga, report_col)
-        lga_report_data['Planned'] = lga_report_data.sum(axis=1, numeric_only=True)
-        lga_report_data.reset_index(drop=False, inplace=True)
+            summary_report_data = generate_summary_data(state_lga_data, self.coverage_col).fillna(0)
 
-        report_chart: Figure = make_bar_chart(
-            lga_report_data, self.admin.lga, report_values, color_scheme=color_map,
-            barmode='group', width=10, text=True
-        )
+            summary_report_data.index = summary_report_data.index + 1
+            summary_report_data.sort_index(inplace=True)
 
-        report_chart: Figure = stylize(report_chart, True, group_gap=0.4, width=0.4)
-        # report_chart.write_image(rf'C:\Users\richa\Downloads\{report_col}_breakdown.png')
+            chart_report: Figure =  make_pie_chart(
+                summary_report_data, self.coverage_col, 'count', color_map, color=self.coverage_col, hole=0.5)
 
-        return report_chart
+            chart_report: Figure = stylize(chart_report)
+            out_name = f'{state} State Day {self.day_value} {qualifier} Summary .png'
+            summary_report = PostReport(
+                state=state,
+                lga=None,
+                level='state',
+                figure=chart_report,
+                save_name=out_name
+            )
+
+            summary_reports.append(summary_report)
+
+        return summary_reports
+
+    def generate_lga_reports(self, subset: bool) -> list[PostReport]:
+        qualifier = 'Cumulative'
+        data = self.dataset.copy()
+        if subset:
+            qualifier = 'Daily'
+            data = data.loc[data[self.campaign_day].notnull()]
+
+        breakdown_charts: list[PostReport] = []
+        states: list[str] = data[self.admin.state].unique().tolist()
+        for state in tqdm(states, desc=f'Creating Day {self.day_value} LGA Reports'):
+            state_data = data.loc[data[self.admin.state]==state]
+            report_values = get_report_values(state_data, self.coverage_col, True)
+            color_map = retrieve_color_scheme(report_values, Scheme.COVERAGE)
+            ordered_report_values = order_scheme_values(color_map, Scheme.COVERAGE)
+            lga_report_data = generate_breakdown_data(state_data, self.admin.lga, self.coverage_col).fillna(0).reset_index(names=self.admin.lga)
+            lga_report_data = lga_report_data[[self.admin.lga]+ordered_report_values]
+
+            report_chart: Figure = make_bar_chart(
+                lga_report_data, self.admin.lga, ordered_report_values, color_scheme=color_map
+            )
+
+            report_chart: Figure = stylize(report_chart, True, group_gap=0.4, width=0.9)
+            out_name = f'{state} State Day {self.day_value} {qualifier} Breakdown Report.png'
+            summary_report = PostReport(
+                state=state,
+                lga=None,
+                level='lga',
+                figure=report_chart,
+                save_name=out_name
+            )
+
+            breakdown_charts.append(summary_report)
+
+        return breakdown_charts
 
     @staticmethod
     def writer(report_output: dict[str, dict[str, Figure]], folder: str, **kwargs)->None:
@@ -221,5 +252,6 @@ class PostImplementationReport:
 
 if __name__ == '__main__':
     df = pd.read_csv(r"C:\Workspace\NEOC\IBRA\August Round\Compiled IBRA R2 Settlements.csv")
-    report: Report = PostImplementationReport(df, coverage_column='Settlement Coverage')
+    # df['lga_code'] = df.apply(lambda row: f"{row['state']}_{row['lga']}", axis=1)
+    report: Report = DailyReport(df, coverage_col='Settlement Coverage', campaign_day_col='day_6')
     report.generate_report()

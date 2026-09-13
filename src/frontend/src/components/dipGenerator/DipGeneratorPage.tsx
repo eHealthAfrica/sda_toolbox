@@ -62,7 +62,14 @@ export default function DipGeneratorPage({ onNavigate }: DipGeneratorPageProps) 
   const accumulatedCsvRows = useRef<Record<string, unknown>[]>([])
   const { startJob, completeJob, failJob } = useJobTracker()
 
-  async function handleSubmit(dipFile: File, validateDip: boolean, teamAllocationFile: File | null, batchSize: number) {
+  async function handleSubmit(
+    dipFile: File,
+    validateDip: boolean,
+    teamAllocationFile: File | null,
+    batchSize: number,
+    teamColumn: string | null,
+    dayColumn: string | null,
+  ) {
     setSubmitting(true)
     setError(null)
     setAnalysis(null)
@@ -80,7 +87,12 @@ export default function DipGeneratorPage({ onNavigate }: DipGeneratorPageProps) 
 
     try {
       const parsed = await parseFileRows(dipFile)
-      setIngestNote(buildIngestNote(parsed))
+      // teamColumn/dayColumn come from DipGeneratorForm's pickers — see its
+      // top-of-file comment. Threading them through here (rather than
+      // letting buildIngestNote/buildAnalysis silently re-guess) keeps the
+      // ingest note and the per-batch analysis below in agreement with
+      // whatever the form actually showed the user before they hit Generate.
+      setIngestNote(buildIngestNote(parsed, teamColumn, dayColumn))
 
       const { batches: splitBatches } = splitDipFileByLga(parsed, batchSize)
       const initialBatches: DipBatch[] = splitBatches.map((b, i) => ({
@@ -108,8 +120,9 @@ export default function DipGeneratorPage({ onNavigate }: DipGeneratorPageProps) 
             prev.map((b, idx) => (idx === i ? { ...b, status: 'done', teamsGenerated: teamPdfs.length } : b))
           )
           // Update the visible analysis after every batch, not just at the
-          // end, so the chart/table/preview fill in incrementally too.
-          setAnalysis(buildAnalysis(accumulatedTeamPdfs.current, accumulatedCsvRows.current))
+          // end, so the chart/table/preview fill in incrementally too. Same
+          // dayColumn override as the ingest note above.
+          setAnalysis(buildAnalysis(accumulatedTeamPdfs.current, accumulatedCsvRows.current, dayColumn))
         } catch (batchErr) {
           const message = batchErr instanceof Error ? batchErr.message : 'This batch failed.'
           setBatches((prev) => prev.map((b, idx) => (idx === i ? { ...b, status: 'error', error: message } : b)))

@@ -71,16 +71,18 @@ def household_consistency_check(household: int, target_pop: int, total_pop: int)
 
     if pd.notna([target_pop, total_pop]).any() and empty_household:
         return 'Missing Settlement Household'
+    try:
+        target_ratio = round(target_pop / household, 0)
+        if target_ratio > 15:
+            return  f"{int(target_ratio)} children per household should be reviewed"
 
-    target_ratio = round(target_pop / household, 0)
-    if target_ratio > 15:
-        return  f"{int(target_ratio)} children per household should be reviewed"
+        pop_ratio = round(total_pop / household, 0)
+        if pop_ratio > 40:
+            return  f"{int(pop_ratio)} people per household should be reviewed"
 
-    pop_ratio = round(total_pop / household, 0)
-    if pop_ratio > 40:
-        return  f"{int(pop_ratio)} people per household should be reviewed"
-
-    return None
+        return None
+    except ZeroDivisionError:
+        return "Missing Settlement Household"
 
 
 def validate_numeric_attribute_consistency(dataset: pd.DataFrame, num_attr: NumericAttributes):

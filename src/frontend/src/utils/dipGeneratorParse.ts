@@ -37,6 +37,39 @@ export async function parseFileRows(file: File): Promise<ParsedRows> {
   return { headers, rows }
 }
 
+// Reads just the column headers of an uploaded DIP file, client-side — same
+// "preview:1 for csv, header:1 sheet read for xlsx" trick as
+// utils/dailyReport.ts::readSettlementListHeaders, duplicated here rather
+// than imported since that helper's own doc comment ties it specifically to
+// POST /reports/daily. Lets DipGeneratorForm offer the file's REAL headers
+// in the Team/Day column pickers (auto-filled from findTeamColumn/
+// findDayOfActivityColumn, freely overridable) instead of the two functions
+// below silently guessing with no way to correct a wrong or missed match —
+// see the regression this fixes: a column literally named "Days" (plural)
+// doesn't match findDayOfActivityColumn's \bday\b word-boundary regex.
+export async function readDipFileHeaders(file: File): Promise<string[]> {
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
+
+  if (extension === 'csv') {
+    const text = await file.text()
+    const parsed = Papa.parse<Record<string, string>>(text, { header: true, preview: 1 })
+    return parsed.meta.fields ?? []
+  }
+
+  if (extension === 'xlsx' || extension === 'xls') {
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    const workbook = XLSX.read(bytes, { type: 'array' })
+    const sheet = workbook.Sheets[workbook.SheetNames[0]]
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown[][]
+    return (rows[0] ?? []).map((v) => String(v))
+  }
+
+  // Not a format this page's own parseFileRows above would read as a table
+  // either — surface no headers rather than guessing; the form falls back
+  // to a free-text field (see DipGeneratorForm.tsx).
+  return []
+}
+
 function isBlank(v: unknown): boolean {
   return v === null || v === undefined || String(v).trim() === ''
 }
@@ -45,11 +78,22 @@ function isBlank(v: unknown): boolean {
 // a row survives if EITHER the team column OR the day-of-activity column is
 // non-empty; it's dropped only when both are blank. Computed from the raw
 // upload, before any batch is sent — the response zip can't tell us this.
-export function buildIngestNote(parsed: ParsedRows): IngestNote {
+//
+// teamColumnOverride/dayColumnOverride let DipGeneratorForm's column
+// pickers take precedence over the auto-detect below — undefined (not
+// passed) falls back to the same findTeamColumn/findDayOfActivityColumn
+// guess as before, so existing callers are unaffected; explicitly passing
+// null means "the picker was left at 'Not set'," which is deliberately
+// different from "not passed."
+export function buildIngestNote(
+  parsed: ParsedRows,
+  teamColumnOverride?: string | null,
+  dayColumnOverride?: string | null,
+): IngestNote {
   const { headers, rows } = parsed
   const lgaColumn = detectColumns(headers).lga
-  const teamColumn = findTeamColumn(headers)
-  const dayColumn = findDayOfActivityColumn(headers)
+  const teamColumn = teamColumnOverride !== undefined ? teamColumnOverride : findTeamColumn(headers)
+  const dayColumn = dayColumnOverride !== undefined ? dayColumnOverride : findDayOfActivityColumn(headers)
 
   let rowsMissingBoth = 0
   const lgaSet = new Set<string>()
@@ -192,9 +236,20 @@ function collectTeamDays(csvRows: Record<string, unknown>[], dayColumn: string |
 // with a PDF's parsed (and possibly "/"-mangled) lga/ward/teamCode when
 // those don't contain the mangled character; unmatched teams get `days:
 // null` rather than a guessed value.
-export function buildAnalysis(allTeamPdfs: { name: string; bytes: Uint8Array }[], allCsvRows: Record<string, unknown>[]): DipGeneratorAnalysis {
+//
+// dayColumnOverride (same undefined-vs-null convention as buildIngestNote
+// above) re-uses whatever the form's Day-column picker resolved to on the
+// UPLOADED file, on the assumption the response DIP.csv carries that same
+// column name straight through unchanged — kept consistent with the ingest
+// note deliberately, rather than letting this side independently re-guess
+// and possibly land on a different column than what the picker showed.
+export function buildAnalysis(
+  allTeamPdfs: { name: string; bytes: Uint8Array }[],
+  allCsvRows: Record<string, unknown>[],
+  dayColumnOverride?: string | null,
+): DipGeneratorAnalysis {
   const csvHeaders = allCsvRows.length > 0 ? Object.keys(allCsvRows[0]) : []
-  const dayColumn = findDayOfActivityColumn(csvHeaders)
+  const dayColumn = dayColumnOverride !== undefined ? dayColumnOverride : findDayOfActivityColumn(csvHeaders)
 
   const teamDips: GeneratedTeamDip[] = allTeamPdfs
     .map((entry) => {

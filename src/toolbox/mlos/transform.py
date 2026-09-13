@@ -1,6 +1,7 @@
 import pandas as pd
 
 from toolbox.configs import CONFIG
+from toolbox.models import Policy
 from toolbox.utils import timer, logger
 from toolbox.mlos import MLoSAttributes
 from toolbox.mlos.attr_builder import build_attributes
@@ -30,7 +31,7 @@ def standardize_mlos_records(data: pd.DataFrame):
         pd.DataFrame: transformed MLoS Dataset
     """
 
-    mlos_attributes: MLoSAttributes = MLoSAttributes()(data, CONFIG.get('ATTRIBUTE_COLUMNS'))
+    mlos_attributes: MLoSAttributes = MLoSAttributes()(data, CONFIG.get('ATTRIBUTE_COLUMNS'), Policy.MLOS)
     print('Starting Standardization')
     transformed_mlos = common_transformations(data)
     transformed_mlos = standardize_take_off_point(transformed_mlos, mlos_attributes)
@@ -42,5 +43,5 @@ def standardize_mlos_records(data: pd.DataFrame):
 
 if __name__ == '__main__':
     file = r"C:\Users\enyinnaya.nwaiwu\Downloads\MLoS May 2026_fixed_20260525.csv"
-    data_df = pd.read_csv(file)
+    data_df = pd.read_excel(r"C:\Workspace\NEOC\IBRA\August Round\Compiled MLoS.xlsx")
     standardize_mlos_records(data_df)

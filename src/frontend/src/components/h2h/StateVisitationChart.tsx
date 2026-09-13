@@ -16,7 +16,21 @@ interface StateVisitationChartProps {
   activeOrder: VisitationStatus[]
   activeState?: string | null
   activeStatus?: VisitationStatus | null
+  // Clicking a bar segment — a specific {state, status} combination.
   onSelect?: (state: string, status: VisitationStatus) => void
+  // Clicking a legend swatch — same effect as clicking the matching
+  // VisitationCards card (H2HTrackingPage's toggleVisitation), independent of
+  // whichever state/LGA/ward is currently on the axis.
+  onLegendSelect?: (status: VisitationStatus) => void
+  // Clicking a row's axis label (the state/LGA/ward name itself, not a
+  // colored segment) — drills into that group, same as picking it in the
+  // settlement list table's State/LGA/Ward select. Omitted at whichever
+  // level has nowhere further to drill (see H2HTrackingPage.tsx).
+  onAxisSelect?: (group: string) => void
+  // "Back up one level" link next to the title — see StateCoverageChart's
+  // matching prop.
+  onDrillUp?: () => void
+  drillUpLabel?: string
   // Overridable so H2HTrackingPage can drill this same chart from a
   // by-state breakdown down to by-LGA (once a state is selected in the
   // settlement list table) and then by-ward (once an LGA is also
@@ -27,12 +41,49 @@ interface StateVisitationChartProps {
 
 const ROW_HEIGHT = 26
 
+// Same clickable-axis-label tick as StateCoverageChart — see that file's
+// comment. Kept as a local copy rather than a shared import since each
+// chart's data shape (and thus its onAxisSelect group value) is otherwise
+// unrelated; duplicating ~20 lines here isn't worth a shared module for it.
+function AxisTick({
+  x,
+  y,
+  payload,
+  onAxisSelect,
+}: {
+  x?: number
+  y?: number
+  payload?: { value: string }
+  onAxisSelect?: (group: string) => void
+}) {
+  const value = payload?.value ?? ''
+  const clickable = !!onAxisSelect
+  return (
+    <text
+      x={x}
+      y={y}
+      dy={4}
+      textAnchor="end"
+      fontSize={11}
+      fill={clickable ? 'var(--color-primary)' : 'var(--color-text-muted)'}
+      style={{ cursor: clickable ? 'pointer' : 'default', textDecoration: clickable ? 'underline' : undefined }}
+      onClick={clickable ? () => onAxisSelect!(value) : undefined}
+    >
+      {value}
+    </text>
+  )
+}
+
 export default function StateVisitationChart({
   data,
   activeOrder,
   activeState,
   activeStatus,
   onSelect,
+  onLegendSelect,
+  onAxisSelect,
+  onDrillUp,
+  drillUpLabel,
   title = 'Settlement visitation by state',
   emptyMessage = 'No state column detected in the result.',
 }: StateVisitationChartProps) {
@@ -49,27 +100,62 @@ export default function StateVisitationChart({
         marginBottom: 24,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <h3 style={{ fontSize: 14 }}>{title}</h3>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {activeOrder.map((status) => (
-            <span
-              key={status}
-              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--color-text-muted)' }}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+          <h3 style={{ fontSize: 14 }}>{title}</h3>
+          {onDrillUp && (
+            <button
+              type="button"
+              onClick={onDrillUp}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--color-primary)',
+                fontSize: 11.5,
+                fontWeight: 600,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: 0,
+              }}
             >
-              <span
-                style={{
-                  width: 9,
-                  height: 9,
-                  borderRadius: 2,
-                  background: VISITATION_COLORS[status],
-                  display: 'inline-block',
-                }}
-              />
-              {status}
-            </span>
-          ))}
+              {drillUpLabel ?? '← Back'}
+            </button>
+          )}
         </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {activeOrder.map((status) => {
+            const active = activeStatus === status
+            return (
+              <span
+                key={status}
+                onClick={onLegendSelect ? () => onLegendSelect(status) : undefined}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 11,
+                  color: active ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                  fontWeight: active ? 700 : 400,
+                  cursor: onLegendSelect ? 'pointer' : undefined,
+                }}
+              >
+                <span
+                  style={{
+                    width: 9,
+                    height: 9,
+                    borderRadius: 2,
+                    background: VISITATION_COLORS[status],
+                    display: 'inline-block',
+                  }}
+                />
+                {status}
+              </span>
+            )
+          })}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8 }}>
+        {onAxisSelect ? 'Click a segment to filter, or a name to drill down' : onSelect ? 'Click a segment to filter' : ''}
       </div>
       {data.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>
@@ -81,7 +167,13 @@ export default function StateVisitationChart({
             <BarChart data={data} layout="vertical" margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="var(--color-border)" />
               <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-              <YAxis type="category" dataKey="state" width={100} tick={{ fontSize: 11 }} interval={0} />
+              <YAxis
+                type="category"
+                dataKey="state"
+                width={100}
+                tick={(props: any) => <AxisTick {...props} onAxisSelect={onAxisSelect} />}
+                interval={0}
+              />
               <Tooltip />
               {activeOrder.map((status) => (
                 <Bar

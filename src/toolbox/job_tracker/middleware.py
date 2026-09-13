@@ -42,6 +42,8 @@ TOOL_ENDPOINTS: dict[tuple[str, str], tuple[str, str]] = {
     ('POST', '/reports/daily'): ('daily-report', 'Reporting — Daily Report'),
     ('POST', '/reports/post'): ('post-implementation-report', 'Reporting — Post Implementation Report'),
     ('POST', '/reports/timespent'): ('timespent', 'Reporting — Timespent Analysis'),
+    ('POST', '/coordinate_review'): ('settlements-coordinate-review', 'Settlement Coordinate Triangulation and Review'),
+    ('POST', '/duplicate-deep-search'): ('search-for-duplicate-settlements', 'Duplicate Settlements Review')
 }
 
 

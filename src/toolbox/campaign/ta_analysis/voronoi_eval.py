@@ -22,7 +22,7 @@ def count_tracks_within_settlement_extent(
     return settlement_extent.drop(columns='geometry')
 
 
-def settlement_voronoi_visitation(tracks: gpd.GeoDataFrame, states: list[str]) -> pd.DataFrame:
+def settlement_voronoi_visitation(tracks: gpd.GeoDataFrame, states: list[str]) -> tuple[pd.DataFrame, str]:
     datasets: dict = CONFIG['DATASETS']
     ta_data = ReadDBData(datasets['settlement_extent'], True).read_data({'state_name': states})
     ta_col: str | None = detect_unique_admin_field(ta_data)
@@ -31,6 +31,6 @@ def settlement_voronoi_visitation(tracks: gpd.GeoDataFrame, states: list[str]) -
         ta_data = construct_new_unique(ta_data, ta_col)
 
     tracks_count_summary = count_tracks_within_settlement_extent(ta_data, tracks, ta_col)
-    tracks_count_summary.fillna(0, inplace=True)
+    tracks_count_summary['track_count'].fillna(0, inplace=True)
 
     return tracks_count_summary, ta_col

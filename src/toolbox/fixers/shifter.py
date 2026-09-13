@@ -59,7 +59,7 @@ def is_flagged(settlement_data: pd.DataFrame) -> bool:
     return True
 
 
-def flag_settlements_within_30m(input_table: pd.DataFrame | gpd.GeoDataFrame) -> pd.DataFrame | gpd.GeoDataFrame:
+def flag_settlements_within_30m(input_table: pd.DataFrame | gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     # Extract coordinates
     lat = input_table['latitude'].values
     lon = input_table['longitude'].values

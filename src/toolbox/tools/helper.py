@@ -214,7 +214,7 @@ async def read_compiled_data(validated_data_files: Any) -> dict[str, pd.DataFram
         sheet_names: list[str] = pd.ExcelFile(content_io).sheet_names
         datasets = {
             sheet_name: pd.read_excel(content_io, sheet_name=sheet_name)
-            for sheet_name in tqdm(sheet_names)
+            for sheet_name in tqdm(sheet_names, desc=f'Reading {validated_data_files.filename}')
         }
 
     return datasets

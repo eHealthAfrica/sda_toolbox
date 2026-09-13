@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+./.idea/
+
+# Virtual environments
+.venv
+
+dev/
+*.env
+Outputs/
+logs/
+data/
+*.tmp./
+htmlcov/
+.coverage
+*.ipynb
+design/
+
+BACKEND_CHANGES_NEEDED.md
+DOCKERIZATION_PLAN.md

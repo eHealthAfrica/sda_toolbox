@@ -40,11 +40,11 @@ export interface GroupFlagBreakdownEntry {
   total: number
 }
 
-// Generic "flagged count by X" — used for LGA on the MLoS QC page. Not named
-// for state specifically because /qc/validation takes one state per run (see
-// toolbox/apps/mlos/qc_mlos.py — `state: State`, singular), so a per-state
-// breakdown of a single QC result would always be one bar; LGA is the
-// grouping that's actually useful at this endpoint's granularity.
+// Generic "flagged count by X" — used for all three drill levels on the
+// MLoS QC page (state, LGA, ward; see FlagBreakdownChart.tsx and
+// MlosQcPage.tsx's groupColumn). Kept as one generic-by-column function
+// rather than a per-level one since the grouping logic is identical at
+// every level — only which column to group by changes.
 export function computeGroupFlagBreakdown(
   records: MlosRecord[],
   groupColumn: string,
@@ -96,13 +96,11 @@ export interface StateFlagBreakdownEntry {
   total: number
 }
 
-// Per-state flagged-count breakdown for StateFlagBreakdownChart. Kept
-// separate from computeGroupFlagBreakdown (used for LGA) even though the
-// logic is identical, since /qc/validation runs one state at a time (see
-// toolbox/apps/mlos/qc_mlos.py — `state: State`, singular) — a per-state
-// breakdown of a single QC result is usually a single bar, but the function
-// still needs to exist and work correctly for whatever composes results
-// across multiple QC runs.
+// Unused now — StateFlagBreakdownChart.tsx (the only caller this was
+// written for) is stubbed out, superseded by computeGroupFlagBreakdown
+// above, which FlagBreakdownChart.tsx now calls directly with whichever
+// column matches the current drill level (state included). Left in place
+// rather than removed since nothing about it is wrong, just redundant.
 export function computeStateFlagBreakdown(
   records: MlosRecord[],
   stateColumn: string,

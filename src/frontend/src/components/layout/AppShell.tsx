@@ -32,6 +32,8 @@ export type AppView =
   | 'dashboard'
   | 'h2h'
   | 'mlos-qc'
+  | 'mlos-duplicate-checker'
+  | 'mlos-coordinate-review'
   | 'mlos-ops'
   | 'uuid-checker'
   | 'reach'
@@ -98,6 +100,28 @@ const NAV_GROUPS: NavGroupConfig[] = [
               strokeWidth="1.4"
             />
             <circle cx="8" cy="5.7" r="1.6" stroke="currentColor" strokeWidth="1.4" />
+          </svg>
+        ),
+      },
+      {
+        view: 'mlos-duplicate-checker',
+        label: 'Duplicate Checker',
+        badge: 'new',
+        icon: (
+          <svg viewBox="0 0 16 16" fill="none">
+            <rect x="2" y="2" width="9" height="9" rx="1.3" stroke="currentColor" strokeWidth="1.3" />
+            <rect x="5" y="5" width="9" height="9" rx="1.3" stroke="currentColor" strokeWidth="1.3" />
+          </svg>
+        ),
+      },
+      {
+        view: 'mlos-coordinate-review',
+        label: 'Coordinate Review',
+        badge: 'new',
+        icon: (
+          <svg viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M8 1v2.6M8 12.4V15M1 8h2.6M12.4 8H15" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
           </svg>
         ),
       },

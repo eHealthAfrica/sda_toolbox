@@ -1,7 +1,5 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { STATE_OPTIONS } from '../../types/h2h'
-import type { StateName } from '../../types/h2h'
 import type { QcFormInput } from '../../types/mlos'
 import FileDropzone from '../common/FileDropzone'
 
@@ -10,23 +8,21 @@ interface QcFormProps {
   submitting: boolean
 }
 
-const fieldStyle = { display: 'flex', flexDirection: 'column' as const, gap: 4 }
 const labelStyle = { fontSize: 12, fontWeight: 600, color: 'var(--color-text-muted)' }
-const inputStyle = {
-  padding: '7px 9px',
-  border: '1px solid var(--color-border)',
-  borderRadius: 'var(--radius-md)',
-  fontSize: 13,
-}
 // Reserved label height (in px), shared by every field in the row below, so
 // their boxes/selects all start at the same y-offset regardless of which
 // one's own label happens to wrap onto more lines — see the matching
 // comment on FileDropzone's labelMinHeight prop.
 const ROW_LABEL_HEIGHT = 56
 
+// No more State field — /qc/validation dropped its `state` param (see
+// api/client.ts::submitMlosQC's comment). The backend now resolves ward
+// boundaries per-row from each settlement's own State column and raises
+// only if that column can't be found at all, so a single upload spanning
+// multiple states is valid input, not something this form needs a state
+// picker to prevent or disambiguate.
 export default function QcForm({ onSubmit, submitting }: QcFormProps) {
   const [mlosFile, setMlosFile] = useState<File | null>(null)
-  const [state, setState] = useState<StateName | ''>('')
   // Defaults mirror the backend's own defaults (toolbox/apps/mlos/qc_mlos.py
   // ::validate_mlos): standardize=None and deep_search=None both read as
   // "off" unless explicitly set true; consistency=True is the one check
@@ -42,12 +38,8 @@ export default function QcForm({ onSubmit, submitting }: QcFormProps) {
       setFormError('An MLoS settlement list file is required.')
       return
     }
-    if (!state) {
-      setFormError('A state is required — it resolves ward boundaries for the spatial checks.')
-      return
-    }
     setFormError(null)
-    onSubmit({ mlosFile, state, standardize, consistency, deepSearch })
+    onSubmit({ mlosFile, standardize, consistency, deepSearch })
   }
 
   return (
@@ -72,20 +64,6 @@ export default function QcForm({ onSubmit, submitting }: QcFormProps) {
         onChange={setMlosFile}
         labelMinHeight={ROW_LABEL_HEIGHT}
       />
-
-      <div style={fieldStyle}>
-        <label style={{ ...labelStyle, minHeight: ROW_LABEL_HEIGHT, display: 'block', boxSizing: 'border-box' }} htmlFor="qc_state">
-          State * <span style={{ fontWeight: 400 }}>— for ward boundary checks</span>
-        </label>
-        <select id="qc_state" style={inputStyle} value={state} onChange={(e) => setState(e.target.value as StateName)}>
-          <option value="">Select a state…</option>
-          {STATE_OPTIONS.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-      </div>
 
       <div style={{ display: 'flex', gap: 20, alignItems: 'center', gridColumn: '1 / -1', flexWrap: 'wrap' }}>
         <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 6 }}>

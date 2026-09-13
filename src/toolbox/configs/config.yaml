@@ -8,6 +8,7 @@ DATASETS:
   settlement_extent: ta
   gridded_settlement_extent: gridded_ta
   settlements: mlos
+  osm: osm
 
   bua: built_up_areas
   ssa: small_settlement_areas
@@ -57,6 +58,7 @@ REGEX:
   TAKEOFF_PREFIX: (?:\btown\b\s+)?
   TAKEOFF_SUFFIX: (?:\s+office\s+)?(?:\s+[A-Za-z0-9])?\b
   UUID4: ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
+  SETTLEMENT_SUFFIX: \b(?:[A-Z]|[1-9]|(?=[MDCLXVI])M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))\b
 
 
 SET_TYPE:
@@ -151,7 +153,6 @@ REPORTING:
     No Coverage: '#ea9999'
 
 
-
 STATE_CODES:
   Cross_River: CR
   Oyo: OY
@@ -197,6 +198,15 @@ EXCLUSIONS:
   - master.id
   - mlos_id
   - eha_guid
+
+REVIEW_COLS:
+  - similarity
+  - latitude
+  - longitude
+  - distance
+  - grid3
+  - near_tracks
+
 
 
 KEYWORDS:

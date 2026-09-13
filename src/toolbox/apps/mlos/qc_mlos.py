@@ -28,8 +28,7 @@ def flag_settlements(settlement_data: pd.DataFrame, report_cols: list[str]):
 
 @timer(title='MLoS Validation')
 @router.post('/qc/validation', tags=['MLoS'])
-async def validate_mlos(mlos_file_path: UploadFile, state: State, standardize: bool=None,
-                        consistency: bool=True, deep_search: bool=None):
+async def validate_mlos(mlos_file_path: UploadFile, standardize: bool=None, consistency: bool=True, deep_search: bool=None):
     """
     Conduct Comprehensive QC on MLoS data including spatial and attributes checks
 
@@ -37,9 +36,6 @@ async def validate_mlos(mlos_file_path: UploadFile, state: State, standardize: b
     -----------
     mlos_file_path: str
         file path of the mlos data <br>
-
-    state:  State
-        State of MLoS Data. State information is used to retrieve ward boundary for admin boundary checks.
 
     standardize: bool
         standardize MLoS before running QC. The Default value is True. Set to False or leave blank to run QC based on MLoS
@@ -59,10 +55,7 @@ async def validate_mlos(mlos_file_path: UploadFile, state: State, standardize: b
     """
 
     mlos_data: pd.DataFrame = await read_dataset(mlos_file_path)
-    state_col = get_admin_col(mlos_data, 'state', 'ignore')
-    if not state_col:
-        state_col = "state_name"
-        mlos_data[state_col] = state.value
+    get_admin_col(mlos_data, 'state', 'raise')
 
     if standardize:
         print('Standardizing MLoS Records')
@@ -73,7 +66,7 @@ async def validate_mlos(mlos_file_path: UploadFile, state: State, standardize: b
         unique_col = 'unique_code'
         mlos_data = construct_new_unique(mlos_data, unique_col)
 
-    qc_ed_mlos: pd.DataFrame = await run_settlements_qc(mlos_data, unique_col, state, consistency, deep_search)
+    qc_ed_mlos: pd.DataFrame = await run_settlements_qc(mlos_data, unique_col, consistency, deep_search)
 
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
     qc_ed_mlos.to_csv(temp_file.name, index=False)
@@ -84,4 +77,12 @@ async def validate_mlos(mlos_file_path: UploadFile, state: State, standardize: b
         temp_file.name,
         media_type="text/csv",
         filename=save_name
+    )
+
+
+if __name__ == '__main__':
+    import asyncio
+    mlos_file = r"C:\Workspace\NEOC\IBRA\August Round\Compiled MLoS.xlsx"
+    asyncio.run(
+        validate_mlos(mlos_file,True, False)
     )
