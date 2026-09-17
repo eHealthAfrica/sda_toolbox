@@ -7,7 +7,7 @@ import type { FixerFormInput, StandardizeFormInput, UpdateValidationFormInput } 
 import type { DipExpansion } from '../types/microplan'
 import type { StateName } from '../types/h2h'
 import type { TracksFormInput } from '../types/compilerTracks'
-import type { DailyReportFormInput } from '../types/dailyReport'
+import type { DailyReportFormInput, DailyPostReport } from '../types/dailyReport'
 import type { JobRow, JobsSummary } from '../types/jobs'
 import type { ContactAnalysisFormInput } from '../types/contactAnalysis'
 import type { PostImplementationFormInput, PostReport } from '../types/postImplementation'
@@ -109,13 +109,47 @@ export async function fetchH2HArchive(jobId: string): Promise<Blob> {
 }
 
 /**
+ * Calls GET /tracking/gridded/reports/{jobId} (toolbox/apps/tracking/
+ * h2h_validation.py) — the Daily/Cumulative report charts for a run
+ * submitH2HTracking above already completed with generate_report=true. Same
+ * list[PostReport] JSON contract as POST /reports/post and POST
+ * /reports/daily — both are built server-side by the exact same
+ * toolbox.reporting.DailyReport pipeline (see campaign/tracker.py::
+ * prepare_reports), just reached through this job-scoped route instead of
+ * their own upload forms — so the response renders with the same
+ * DailyReportChartsPanel component DailyReportPage.tsx uses.
+ *
+ * Unlike fetchH2HArchive above, `jobId` is NOT consumed by this call — the
+ * backend route reads it with h2h_cache.peek_result (non-destructive), so
+ * the archive can still be downloaded afterward. Still subject to the same
+ * 30 minute TTL (h2h_cache.py's TTL_SECONDS).
+ *
+ * Raises (via ApiError): 404 if the job id is unknown/expired, or if the
+ * original run had generate_report=false.
+ */
+export async function fetchH2HReports(jobId: string): Promise<DailyPostReport[]> {
+  const response = await fetch(`${API_BASE_URL}/tracking/gridded/reports/${jobId}`)
+  await throwIfNotOk(response)
+  return response.json()
+}
+
+/**
  * Calls POST /qc/validation (toolbox/apps/mlos/qc_mlos.py). Only
- * `mlos_file_path` is a form field — `state`, `standardize`, `consistency`
- * and `deep_search` all get their `= Query(...)`-equivalent default in
- * FastAPI (plain scalar params with no File()/Form() annotation are Query
- * params, even on a multipart endpoint — unlike `/tracking/gridded`, where
+ * `mlos_file_path` is a form field — `standardize`, `consistency` and
+ * `deep_search` all get their `= Query(...)`-equivalent default in FastAPI
+ * (plain scalar params with no File()/Form() annotation are Query params,
+ * even on a multipart endpoint — unlike `/tracking/gridded`, where
  * `analysis_day`/`is_mop_up` were explicitly wrapped in Form()), so they go
  * on the URL, not in the FormData body.
+ *
+ * There is no `state` param anymore — the route used to take one State enum
+ * value and resolve ward boundaries against just that state; it now calls
+ * `get_admin_col(mlos_data, 'state', 'raise')` and resolves boundaries
+ * per-row from whichever state each settlement's own State column says,
+ * raising only if no state column can be found at all. That's what makes a
+ * single upload spanning multiple states valid input now, not just a
+ * single-state file — QcSummaryCards/FlagBreakdownChart on MlosQcPage take
+ * advantage of that by surfacing a real per-state breakdown.
  *
  * Returns the raw CSV response as a Blob — parse it with
  * src/api/parseResult.ts::parseMlosCsv. Unlike H2H, this is a single CSV
@@ -125,20 +159,139 @@ export async function submitMlosQC(input: QcFormInput): Promise<Blob> {
   if (!input.mlosFile) {
     throw new Error('An MLoS settlement list file is required.')
   }
-  if (!input.state) {
-    throw new Error('A state is required — it resolves ward boundaries for the spatial checks.')
-  }
 
   const formData = new FormData()
   formData.append('mlos_file_path', input.mlosFile)
 
   const params = new URLSearchParams()
-  params.append('state', input.state)
   params.append('standardize', String(input.standardize))
   params.append('consistency', String(input.consistency))
   params.append('deep_search', String(input.deepSearch))
 
   const response = await fetch(`${API_BASE_URL}/qc/validation?${params.toString()}`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  await throwIfNotOk(response)
+  return response.blob()
+}
+
+/**
+ * Calls POST /duplicate-deep-search/ (toolbox/apps/mlos/duplicate_checker.py
+ * — the "Duplicate Checker" MLoS tool). `settlements_file` is a bare
+ * UploadFile, so it's a multipart form field; `threshold` is a bare `int`
+ * param with no File()/Form()/Query() annotation on an endpoint that also
+ * has an UploadFile param — same repo convention documented throughout this
+ * file (see submitMlosQC above) — so it's a Query param on the URL, not part
+ * of the FormData body.
+ *
+ * NOTE for whoever next touches the backend route: duplicate_checker.py
+ * calls `duplicate_deep_search_protocol(settlement_data, 'ward', unique_code,
+ * geom, 'mapping')`, but that function's real signature (deep_search.py) is
+ * `(dataset, unique_admin_col, threshold, geom_cols, output)` — the literal
+ * string 'ward' is passed where `unique_admin_col` is expected, and
+ * `unique_code` (a column name) where the numeric `threshold` is expected.
+ * That looks like an argument-order slip that could mean this `threshold`
+ * query param never actually reaches the similarity check. Flagging this
+ * here rather than fixing it — this file only calls the route as it's
+ * actually written; the mismatch is in backend code this app doesn't own.
+ *
+ * Returns the raw CSV response as a Blob (FileResponse, media_type
+ * "text/csv") — parse it with src/api/parseResult.ts::parseDuplicateCheckerCsv.
+ * Columns are always state/lga/ward/"settlement 1"/"settlement 2"/score/
+ * distance/review, fixed by generate_mapping_table — not derived from
+ * whatever columns the uploaded file used, unlike most other MLoS endpoints
+ * in this file.
+ */
+export async function submitDuplicateChecker(settlementsFile: File, threshold: number): Promise<Blob> {
+  if (!settlementsFile) {
+    throw new Error('A settlement list file is required.')
+  }
+
+  const formData = new FormData()
+  formData.append('settlements_file', settlementsFile)
+
+  const params = new URLSearchParams()
+  params.append('threshold', String(threshold))
+
+  const response = await fetch(`${API_BASE_URL}/duplicate-deep-search/?${params.toString()}`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  await throwIfNotOk(response)
+  return response.blob()
+}
+
+/**
+ * Calls POST /coordinate_review (toolbox/apps/mlos/coord_review.py —
+ * verified directly against the real backend source, not inferred).
+ * `settlements_file`, `sources`, `tracks_data` are bare UploadFile params
+ * with no File()/Form()/Query() wrapper — FastAPI always routes a bare
+ * UploadFile to the multipart body. `use_osm` is a bare `bool` with no
+ * default and no File()/Form()/Query() wrapper either — same repo convention
+ * documented throughout this file (see submitMlosQC, submitDuplicateChecker
+ * above): a scalar param alongside UploadFile params on a multipart endpoint
+ * is a Query param, not a form field, so it goes on the URL.
+ *
+ * NOTE: the route itself dropped its trailing slash (was `/coordinate_review/`,
+ * now `/coordinate_review`) in the same backend change that added `use_osm` —
+ * updated here to match exactly, since a mismatched trailing slash would
+ * otherwise round-trip through a redirect (or 404, depending on server
+ * config) for no reason. This also happens to now line up with the
+ * Dashboard's job-log whitelist entry (toolbox/job_tracker/middleware.py's
+ * TOOL_ENDPOINTS has `('POST', '/coordinate_review')`, no trailing slash) —
+ * worth a real run to confirm this tool's runs are finally showing up there.
+ *
+ * `sources` must be an Excel workbook (.xlsx/.xls, one sheet per source) or
+ * a .zip of per-source files — toolbox/tools/helper.py::read_compiled_data
+ * raises DataError on a plain .csv. Every sheet also needs a
+ * fuzzy-detectable state/LGA/ward/settlement column
+ * (toolbox/mlos/mtools.py::AdminColumns.create_by_search, error='raise') or
+ * the WHOLE request fails — there's no per-sheet partial-success path, so a
+ * single malformed sheet in an otherwise-fine workbook takes down the run.
+ *
+ * `tracks_data` only works today for a single already-spatial file
+ * (.gpkg/.kml/.shp/.sqlite, or a lat/lon csv/xlsx). A .zip can't currently
+ * work here: reading a zipped tracks file requires a `tracks_extension`
+ * value (toolbox/tracks_manager/tr.py::read_tracks), and this router has no
+ * `tracks_extension` param to supply one — flagged to the backend owner,
+ * not something the frontend can route around.
+ *
+ * `use_osm` — when true, OpenStreetMap is folded in as one more source
+ * alongside whatever sheets `sources` contains; the returned CSV just gets
+ * an extra `osm_*` 6-column evidence group like any other detected source
+ * (see utils/coordinateReviewAggregate.ts::detectSourceNames), no special
+ * handling needed client-side.
+ *
+ * Returns the raw CSV response as a Blob (FileResponse, media_type
+ * "text/csv") — parse it with parseResult.ts::parseCoordinateReviewCsv.
+ * Separately, the backend's FileResponse call passes `filename=tmp_file.name`
+ * (a raw tempfile path) rather than a friendly name — irrelevant here since
+ * this page names its own downloads client-side, but would look wrong if
+ * anyone ever hit this endpoint directly from a browser.
+ */
+export async function submitCoordinateReview(settlementsFile: File, sourcesFile: File, tracksFile: File, useOsm: boolean): Promise<Blob> {
+  if (!settlementsFile) {
+    throw new Error('A settlement list file is required.')
+  }
+  if (!sourcesFile) {
+    throw new Error('A sources workbook (or zip) is required.')
+  }
+  if (!tracksFile) {
+    throw new Error('A tracks file is required.')
+  }
+
+  const formData = new FormData()
+  formData.append('settlements_file', settlementsFile)
+  formData.append('sources', sourcesFile)
+  formData.append('tracks_data', tracksFile)
+
+  const params = new URLSearchParams()
+  params.append('use_osm', String(useOsm))
+
+  const response = await fetch(`${API_BASE_URL}/coordinate_review?${params.toString()}`, {
     method: 'POST',
     body: formData,
   })
@@ -681,74 +834,41 @@ export async function submitCombineLgaData(lgaFile: File, fileExtension: string 
 
 /**
  * Calls POST /reports/daily (toolbox/apps/tracking/reporter/
- * campaign_day_reporting.py::generate_campaign_daily_report). `settlement_list`
- * is a bare UploadFile (form field). `campaign_day_col`/`cumulative_day_col`
- * are bare `Optional[str]` params with no File()/Form()/Query() annotation —
- * same repo convention confirmed across every other endpoint in this app
- * (Fixer's booleans/state, /qc/validation's state, Update Validation's
- * purpose) — so both go on the URL as Query params, sent only when actually
- * chosen. The backend requires at least one of the two.
+ * campaign_day_reporting.py::generate_campaign_daily_report) — reworked
+ * server-side to match Post Implementation's own contract exactly.
+ * `settlement_list` is a bare UploadFile -> FormData; `campaign_day_col`/
+ * `coverage_col` are bare (un-annotated) params -> Query params, same repo
+ * convention confirmed across every other endpoint in this app (Fixer's
+ * booleans/state, /qc/validation's state, Update Validation's purpose).
+ * Both are now REQUIRED — the old optional day/cumulative pair (and the
+ * "at least one of two" validation it needed) is gone; a single call always
+ * builds both a Day and a Cumulative set (DailyReport.generate_report()
+ * always runs both `subset=True` and `subset=False` passes).
  *
- * ⚠ Like submitCombineLgaData above, this call is expected to fail — but
- * for THREE independent, code-confirmed reasons here, not one, traced
- * through the full call chain rather than assumed from the docstring:
- *
- * 1. Line 42 of the route opens with an unconditional
- *    `raise ResourcesError('Not Available', 'This service is currently
- *    under development')`, before any of the real logic below it runs.
- *    The app's global exception handler (sda_toolbox.py::
- *    api_exception_handler) turns any ToolBoxExceptions subclass into a
- *    JSON response shaped `{msg, detail, status_code}` at `exc.status_code`
- *    — for ResourcesError that default is 404 — with `err.detail.detail`
- *    on the ApiError this throws carrying the exact string 'This service is
- *    currently under development'. DailyReportPage surfaces that real
- *    message as-is rather than a generic one.
- * 2. If that guard is ever removed: line 58, `campaign_day =
- *    detect_number(campaign_day_col)`, runs unconditionally even though the
- *    route's own validation (lines 45-48) explicitly permits a
- *    cumulative-only request where `campaign_day_col` is `None` —
- *    `detect_number` does `re.search(pattern, text)` with no None-check, so
- *    this raises `TypeError: expected string or bytes-like object` the
- *    moment someone submits cumulative-only.
- * 3. Even a "both columns supplied" request — the one path that survives
- *    bug #2 — still crashes one line later. `write_in_memory_zip
- *    (daily_report, image_reports, campaign_day)` (line 59) calls
- *    `report.writer(images, tmp_dir_name, *args)` internally
- *    (tools/helper.py:110), i.e. `DailyReport.writer(image_reports,
- *    tmp_dir_name, campaign_day)` — three positional arguments. But
- *    `DailyReport.writer` (reporting/reporter.py:98-99) is declared as
- *    `writer(report_output, folder, **kwargs)` — no third positional
- *    parameter — so this raises `TypeError: writer() takes 2 positional
- *    arguments but 3 were given` (confirmed by reproducing the exact call
- *    shape standalone, not just read off the signature). Contrast with
- *    `PostImplementationReport.writer(report_output, folder, lga_list)`
- *    (reporter.py:164-165), which the same generic write_in_memory_zip
- *    helper calls successfully because it actually declares a third
- *    positional parameter — DailyReport's `**kwargs`-only signature reads
- *    like it was written for a keyword call (`report_day=...`) that
- *    write_in_memory_zip never makes.
- *
- * api/parseResult.ts::parseDailyReportZip is written against what the
- * response WOULD contain once all three are fixed (the exact PNG filenames
- * DailyReport.writer builds) — kept ready to wire in rather than guessed,
- * same "ready but not yet reachable" posture as submitCombineDmpFiles
- * above. This function makes the real call regardless and lets the caller
- * decide how to present a failure, same as submitCombineLgaData.
+ * The response is `response_model=list[PostReport]`
+ * (toolbox/reporting/reporter.py::PostReport) — the exact same shared model
+ * /reports/post returns below, plain JSON rather than a ZIP. See
+ * types/dailyReport.ts for the full shape (including the Daily/Cumulative-
+ * via-save_name parsing note) — this function just parses the JSON body,
+ * same as submitPostImplementationReport.
  */
-export async function submitDailyReport(input: DailyReportFormInput): Promise<Blob> {
+export async function submitDailyReport(input: DailyReportFormInput): Promise<DailyPostReport[]> {
   if (!input.settlementFile) {
     throw new Error('A settlement list file is required.')
   }
-  if (!input.campaignDayCol && !input.cumulativeDayCol) {
-    throw new Error('Choose at least one of the Day column or Cumulative column — the route rejects a request with neither.')
+  if (!input.campaignDayCol.trim()) {
+    throw new Error('The campaign day column is required.')
+  }
+  if (!input.coverageCol.trim()) {
+    throw new Error('The coverage/status column is required.')
   }
 
   const formData = new FormData()
   formData.append('settlement_list', input.settlementFile)
 
   const params = new URLSearchParams()
-  if (input.campaignDayCol) params.append('campaign_day_col', input.campaignDayCol)
-  if (input.cumulativeDayCol) params.append('cumulative_day_col', input.cumulativeDayCol)
+  params.append('campaign_day_col', input.campaignDayCol.trim())
+  params.append('coverage_col', input.coverageCol.trim())
 
   const response = await fetch(`${API_BASE_URL}/reports/daily?${params.toString()}`, {
     method: 'POST',
@@ -756,7 +876,7 @@ export async function submitDailyReport(input: DailyReportFormInput): Promise<Bl
   })
 
   await throwIfNotOk(response)
-  return response.blob()
+  return response.json()
 }
 
 /**

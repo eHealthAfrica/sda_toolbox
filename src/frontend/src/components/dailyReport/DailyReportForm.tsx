@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import type { DailyReportFormInput } from '../../types/dailyReport'
-import { findDayOfActivityColumn, findCumulativeColumn, extractDayNumber } from '../../utils/columns'
+import { findDayOfActivityColumn } from '../../utils/columns'
 import { readSettlementListHeaders } from '../../utils/dailyReport'
 import FileDropzone from '../common/FileDropzone'
 
@@ -24,42 +24,43 @@ const selectStyle = {
   borderRadius: 'var(--radius-md)',
   fontSize: 12.5,
 }
-const NONE_OPTION = ''
 
 /**
- * Upload form for POST /reports/daily. `settlement_list` is the only real
- * file upload; `campaign_day_col`/`cumulative_day_col` are Query params on
- * the real route (see api/client.ts::submitDailyReport) — collected here the
- * same way regardless, same convention as every other form in this app.
+ * Upload form for POST /reports/daily. `settlement_list` is the only file;
+ * `campaign_day_col` and `coverage_col` are both now REQUIRED Query params
+ * on the real route (see api/client.ts::submitDailyReport) — the old
+ * optional day/cumulative pair, and the "at least one of two" validation it
+ * needed, is gone. A single run always builds both a Day and a Cumulative
+ * set (DailyReport.generate_report() always runs both passes).
  *
- * Both column pickers are populated from the UPLOADED FILE'S OWN HEADERS
+ * Both pickers are dropdowns populated from the UPLOADED FILE'S OWN HEADERS
  * (utils/dailyReport.ts::readSettlementListHeaders), read client-side the
- * moment a file is chosen — not typed blind, and not a fixed illustrative
- * list. Defaults: Day column defaults to the first header matching /\bday\b/i
+ * moment a file is chosen — same convention as every other form in this
+ * app. Day column defaults to the first header matching /\bday\b/i
  * (utils/columns.ts::findDayOfActivityColumn — the same heuristic the H2H
- * page already uses for its own day-of-activity column); once a Day column
- * is picked, the Cumulative column defaults to whatever
- * findCumulativeColumn guesses from it (a "day_{N}_cumm"-shaped header,
- * N taken from the Day column's own name via extractDayNumber). Either
- * default can be overridden, and either field can be left at "None" — the
- * form only requires at least one, matching the real route's own validation.
+ * page already uses for its own day-of-activity column). Coverage column
+ * defaults to whichever header contains "coverage", mirroring
+ * PostImplementationForm's own `report_col` default exactly — this route
+ * uses the very same DailyReport class, `coverage_col` parameter, and
+ * default dev-harness column name ("Settlement Coverage") as Post
+ * Implementation's `report_col`.
  *
  * Falls back to free-text inputs when header detection finds nothing (an
- * unsupported extension, or an unreadable file) — never blocks entry on a
- * client-side parse failure the real backend wouldn't itself be bothered by.
+ * unsupported extension, or an unreadable file) — same fallback every other
+ * form in this app uses; every readable upload gets the dropdown.
  */
 export default function DailyReportForm({ onSubmit, submitting }: DailyReportFormProps) {
   const [settlementFile, setSettlementFile] = useState<File | null>(null)
   const [headers, setHeaders] = useState<string[]>([])
-  const [campaignDayCol, setCampaignDayCol] = useState<string>(NONE_OPTION)
-  const [cumulativeDayCol, setCumulativeDayCol] = useState<string>(NONE_OPTION)
+  const [campaignDayCol, setCampaignDayCol] = useState('')
+  const [coverageCol, setCoverageCol] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [headerReadError, setHeaderReadError] = useState<string | null>(null)
 
   async function handleFileChange(file: File | null) {
     setSettlementFile(file)
-    setCampaignDayCol(NONE_OPTION)
-    setCumulativeDayCol(NONE_OPTION)
+    setCampaignDayCol('')
+    setCoverageCol('')
     setHeaderReadError(null)
     if (!file) {
       setHeaders([])
@@ -73,14 +74,9 @@ export default function DailyReportForm({ onSubmit, submitting }: DailyReportFor
         return
       }
       const dayDefault = findDayOfActivityColumn(fileHeaders)
-      if (dayDefault) {
-        setCampaignDayCol(dayDefault)
-        const dayNumber = extractDayNumber(dayDefault)
-        if (dayNumber !== null) {
-          const cummDefault = findCumulativeColumn(fileHeaders, dayNumber)
-          if (cummDefault) setCumulativeDayCol(cummDefault)
-        }
-      }
+      if (dayDefault) setCampaignDayCol(dayDefault)
+      const coverageDefault = fileHeaders.find((h) => /coverage/i.test(h))
+      if (coverageDefault) setCoverageCol(coverageDefault)
     } catch {
       setHeaders([])
       setHeaderReadError('Could not read column headers from this file client-side — enter the column names below directly.')
@@ -93,19 +89,19 @@ export default function DailyReportForm({ onSubmit, submitting }: DailyReportFor
       setFormError('A settlement list file is required.')
       return
     }
-    if (!campaignDayCol && !cumulativeDayCol) {
-      setFormError('Choose at least one of the Day column or Cumulative column.')
+    if (!campaignDayCol.trim()) {
+      setFormError('The campaign day column is required.')
+      return
+    }
+    if (!coverageCol.trim()) {
+      setFormError('The coverage/status column is required.')
       return
     }
     setFormError(null)
-    onSubmit({
-      settlementFile,
-      campaignDayCol: campaignDayCol || null,
-      cumulativeDayCol: cumulativeDayCol || null,
-    })
+    onSubmit({ settlementFile, campaignDayCol: campaignDayCol.trim(), coverageCol: coverageCol.trim() })
   }
 
-  const canSubmit = !!settlementFile && (!!campaignDayCol || !!cumulativeDayCol) && !submitting
+  const canSubmit = !!settlementFile && !!campaignDayCol.trim() && !!coverageCol.trim() && !submitting
   const useFreeText = headers.length === 0
 
   return (
@@ -122,8 +118,9 @@ export default function DailyReportForm({ onSubmit, submitting }: DailyReportFor
     >
       <h2 style={{ fontSize: 13, margin: '0 0 3px' }}>Run settings</h2>
       <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginBottom: 12 }}>
-        Upload a settlement list carrying a day-of-activity column, a cumulative-status column, or both — at least one
-        is required (the real route rejects a request with neither).
+        Upload a settlement list carrying a day-of-activity column and a coverage/status column — one Daily and one
+        Cumulative summary pie chart, plus one Daily and one Cumulative LGA-breakdown bar chart, get generated per
+        state.
       </div>
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <FileDropzone label="Settlement list (.csv / .xlsx)" accept=".csv,.xlsx,.xls" file={settlementFile} onChange={handleFileChange} fillWidth />
@@ -140,7 +137,7 @@ export default function DailyReportForm({ onSubmit, submitting }: DailyReportFor
             />
           ) : (
             <select value={campaignDayCol} onChange={(e) => setCampaignDayCol(e.target.value)} style={{ ...selectStyle, minWidth: 180 }}>
-              <option value={NONE_OPTION}>None</option>
+              <option value="">Choose a column…</option>
               {headers.map((h) => (
                 <option key={h} value={h}>
                   {h}
@@ -151,18 +148,18 @@ export default function DailyReportForm({ onSubmit, submitting }: DailyReportFor
         </div>
 
         <div style={fieldStyle}>
-          <label style={labelStyle}>Cumulative column (cumulative_day_col)</label>
+          <label style={labelStyle}>Coverage column (coverage_col)</label>
           {useFreeText ? (
             <input
               type="text"
-              value={cumulativeDayCol}
-              onChange={(e) => setCumulativeDayCol(e.target.value)}
-              placeholder="e.g. day_4_cumm"
-              style={{ ...selectStyle, minWidth: 180 }}
+              value={coverageCol}
+              onChange={(e) => setCoverageCol(e.target.value)}
+              placeholder="e.g. Settlement Coverage"
+              style={{ ...selectStyle, minWidth: 220 }}
             />
           ) : (
-            <select value={cumulativeDayCol} onChange={(e) => setCumulativeDayCol(e.target.value)} style={{ ...selectStyle, minWidth: 180 }}>
-              <option value={NONE_OPTION}>None</option>
+            <select value={coverageCol} onChange={(e) => setCoverageCol(e.target.value)} style={{ ...selectStyle, minWidth: 220 }}>
+              <option value="">Choose a column…</option>
               {headers.map((h) => (
                 <option key={h} value={h}>
                   {h}

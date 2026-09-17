@@ -50,14 +50,10 @@ def flatten_issues_data(data: list[list[tuple[str, ...]]]):
     return actions
 
 
-def group_settlement_by_admin(master_data: pd.DataFrame, level: str, unique_col: str)-> list[list[str]]:
-    lga_col = get_admin_col(master_data, 'lga')
-    if level=='lga':
-        admin_column = lga_col
-    else:
-        ward_col = get_admin_col(master_data, 'ward')
-        master_data['ward_code'] = master_data.apply(lambda row: f"{row[lga_col]}_{row[ward_col]}", axis=1)
-        admin_column = "ward_code"
+def group_settlement_by_admin(master_data: pd.DataFrame, unique_col: str)-> list[list[str]]:
+    state, lga_col, ward_col  = [get_admin_col(master_data, lvl) for lvl in ['state', 'lga', 'ward']]
+    master_data['ward_code'] = master_data.apply(lambda row: f"{row[lga_col]}_{row[ward_col]}", axis=1)
+    admin_column = "ward_code"
 
     master_data_admin_grouping: list[pd.DataFrame] = [
         group for _, group
@@ -86,12 +82,12 @@ def parse_unique_settlement_name(record: str):
 
 
 def has_suffix(text: str) -> bool:
-    matched = re.search(r'\b([A-Z]|[1-9])$', text, re.IGNORECASE)
-    return bool(matched)
+    pattern = r'\b(?:[A-Z]|[1-9]|(?=[MDCLXVI])M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3}))\b'
+    return bool(re.search(pattern, text, re.IGNORECASE))
 
 
 @lru_cache
-def direct_compare_settlements(*settlements, threshold: int = 91) -> tuple[DuplicateType, int]:
+def direct_compare_settlements(*settlements, threshold: int) -> tuple[DuplicateType, int]:
     logging.info('Settlement pair similarity test')
     settlement_1, settlement_2 = settlements
     if settlement_1 == settlement_2:
@@ -124,7 +120,7 @@ def manage_checked_pairs(reviewed_pairs: list):
 
 def review_ward_settlement_for_duplicates(
         pairing: Iterable, master_data: pd.DataFrame,
-        unique_col: str, geo_cols: GeomColumns | None)-> list | None:
+        unique_col: str, geo_cols: GeomColumns | None, threshold: int)-> list | None:
 
     checked_pair = []
     skipped = 0
@@ -137,7 +133,7 @@ def review_ward_settlement_for_duplicates(
             continue
 
         settlements = [parse_unique_settlement_name(element) for element in pair]
-        threshold = CONFIG['THRESHOLDS']['INTRA-WARD']
+        threshold = threshold if threshold else CONFIG['THRESHOLDS']['INTRA-WARD']
         duplicate_type, score = direct_compare_settlements(*settlements, threshold=threshold)
         if duplicate_type == DuplicateType.NOT_DUPLICATE:
             continue
@@ -171,14 +167,14 @@ def review_ward_settlement_for_duplicates(
     return checked_pair if len(checked_pair) >= 1 else None
 
 
-@timer
+@timer(display=True)
 def duplicate_deep_search_protocol(
-        dataset: pd.DataFrame, search_level: Literal['lga', 'ward'], unique_admin_col: str,
+        dataset: pd.DataFrame, unique_admin_col: str, threshold: int,
         geom_cols: GeomColumns, output: Literal['update', 'mapping']) -> pd.DataFrame:
 
     try:
         logging.info('Using similarity protocol for duplicate search')
-        unique_ward_grouping: list[list] = group_settlement_by_admin(dataset, search_level, unique_admin_col)
+        unique_ward_grouping: list[list] = group_settlement_by_admin(dataset, unique_admin_col)
         permutation_ward_settlement_grouping = [
             permutations(admin_group, 2) for admin_group
             in unique_ward_grouping
@@ -190,7 +186,10 @@ def duplicate_deep_search_protocol(
         with concurrent.futures.ThreadPoolExecutor(max_workers=CPU_COUNT) as executor:
             futures = [
                 executor.submit(
-                    review_ward_settlement_for_duplicates, ward_pair, dataset, unique_admin_col, geom_cols)
+                    review_ward_settlement_for_duplicates, ward_pair, dataset,
+                    unique_admin_col, geom_cols, threshold
+                )
+
                 for ward_pair in permutation_ward_settlement_grouping
             ]
 
@@ -233,18 +232,15 @@ def generate_mapping_table(reviewed_data: list[tuple[str,...]])-> pd.DataFrame:
 
 
 if __name__ == '__main__':
-    df = pd.read_excel(
-        r"C:\Workspace\MLoS\validation\Kebbi_Harmonised_MLoS_Manager.xlsx",
-        sheet_name='MLoS',
-        engine='openpyxl'
-    )
+    df = pd.read_csv(
+        r"C:\Users\enyinnaya.nwaiwu\Downloads\20260909_Migrant Sites Linelist_vFinal.xlsx - Final Migrant Sites.csv")
     # isolate duplicated and add concatenate into result
     df_checked = duplicate_deep_search_protocol(
         df,
-        search_level='ward',
+        threshold=92,
         unique_admin_col='unique_code',
-        geom_cols=GeomColumns(latitude='latitude', longitude='longitude'),
+        geom_cols=GeomColumns(latitude='LATITUDE', longitude='LONGITUDE'),
         output='mapping'
     )
 
-    df_checked.to_csv(r"C:\Workspace\MLoS\validation\V13\Potential Duplicate Review.csv", index=False)
+    df_checked.to_csv(r"C:\Workspace\MIGRANT MAPPING\Migrant Sites_Potential Duplicates.csv", index=False)

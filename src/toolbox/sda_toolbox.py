@@ -25,10 +25,12 @@ from toolbox.apps import (
     standardizer,
     dip_template,
     uuid_checker,
+    coord_review,
     reach_analysis,
     h2h_validation,
     contact_analysis,
     update_validation,
+    duplicate_checker,
     hitnrun_validation,
     submission_reviewer,
     campaign_day_reporting,
@@ -94,8 +96,10 @@ app.add_middleware(JobLoggingMiddleware)
 # MLoS Endpoints
 app.include_router(fixer.router)
 app.include_router(qc_mlos.router)
+app.include_router(coord_review.router)
 app.include_router(standardizer.router)
 app.include_router(h2h_validation.router)
+app.include_router(duplicate_checker.router)
 app.include_router(update_validation.router)
 
 # DB Access

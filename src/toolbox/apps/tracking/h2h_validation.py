@@ -6,10 +6,10 @@ from typing import Optional
 from tqdm import tqdm
 import geopandas as gpd
 from fastapi.responses import Response, StreamingResponse
-from fastapi import APIRouter, UploadFile, File, Form, Query, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 from toolbox.mlos import get_admin_col
-from toolbox.utils import atimer, logger
+from toolbox.utils import logger
 from toolbox.campaign import CampaignDatasets
 from toolbox.tracks_manager.tr import read_tracks
 from toolbox.access.read_mgr import  read_dataset
@@ -17,6 +17,7 @@ from toolbox.access.export_mgr import add_to_archive
 from toolbox.campaign.tracker import settlement_tracking
 from toolbox.models import State, CampaignDay, Extensions
 from toolbox.apps.tracking import h2h_cache
+from toolbox.reporting import PostReport
 
 
 logger(log_name='Gridded Validation')
@@ -35,6 +36,41 @@ async def prepare_datasets(
     datasets = CampaignDatasets(dip_data, tracks_data, campaign_day)
 
     return datasets
+
+
+@router.get('/tracking/gridded/reports/{job_id}', tags=['Tracking'], response_model=list[PostReport])
+async def h2h_settlement_tracking_reports(job_id: str) -> list[PostReport]:
+    """
+    Returns the Daily/Cumulative report charts for a run POST /tracking/gridded
+    already computed with generate_report=True — same list[PostReport] JSON
+    contract as POST /reports/post and POST /reports/daily (toolbox/reporting/
+    reporter.py::PostReport), built by the same DailyReport pipeline
+    (campaign/tracker.py::prepare_reports).
+
+    Non-destructive — unlike the archive endpoint, calling this does NOT
+    consume job_id, so the archive can still be downloaded afterward. Still
+    subject to h2h_cache.TTL_SECONDS (30 minutes), same as the archive route.
+
+    Raises
+    -------
+    404: job_id is unknown or has expired, or the original request had
+        generate_report=False (no reports were ever generated for this run).
+    """
+    cached = h2h_cache.peek_result(job_id)
+    if cached is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                'This result is no longer available — the run is more than 30 minutes old, '
+                'or the job id is invalid. Re-run the analysis to get a fresh id.'
+            ),
+        )
+    if not cached.reports:
+        raise HTTPException(
+            status_code=404,
+            detail='No reports were generated for this run — resubmit with generate_report=True.',
+        )
+    return cached.reports
 
 
 @router.post('/tracking/gridded', tags=['Tracking'])
@@ -165,10 +201,6 @@ async def h2h_settlement_tracking_archive(job_id: str) -> StreamingResponse:
         for output in tqdm(data_map, total=len(data_map), desc='Compressing Outputs...'):
             add_to_archive(zip_file, *output)
 
-        if cached.reports:
-            # Add reports zip if available
-            cached.reports.seek(0)
-            zip_file.writestr(f'reports_{cached.analysis_day}.zip', cached.reports.read())
 
     zip_buffer.seek(0)
     return StreamingResponse(

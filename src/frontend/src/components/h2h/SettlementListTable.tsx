@@ -1,34 +1,53 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { SettlementCoverageCategory, SettlementRecord, VisitationStatus } from '../../types/h2h'
-import { SETTLEMENT_COVERAGE_CATEGORIES, VISITATION_STATUSES } from '../../types/h2h'
 import type { DetectedColumns } from '../../utils/columns'
-import { uniqueColumnValues } from '../../utils/aggregate'
 import { COVERAGE_COLORS, UNKNOWN_COLOR, VISITATION_COLORS } from '../../utils/colors'
 import Pager from '../common/Pager'
 
 interface SettlementListTableProps {
+  // Already fully scoped/filtered by H2HTrackingPage — State/LGA/Ward drill
+  // AND any active coverage/visitation filter, from whichever source set it
+  // (a card, a chart legend/segment/axis click, or the selects below). This
+  // table does no filtering of its own any more — see the comment above the
+  // component for why that changed.
   records: SettlementRecord[]
   columns: DetectedColumns
   cumColumn: string
   coverageColumn?: string
   timeSpentColumn?: string
-  // State/LGA are owned by H2HTrackingPage, not this table — picking either
-  // one here also drives the drill-down on the two breakdown charts and the
-  // summary/coverage/visitation cards above (see H2HTrackingPage.tsx), so
-  // they have to live where those do. stateOptions/lgaOptions come from the
-  // page too, built from the full (undrilled) result so every state stays
-  // selectable no matter what's currently picked, with lgaOptions narrowed
-  // to whichever state (if any) is selected.
+  // State/LGA/Ward/Visitation/Coverage are ALL owned by H2HTrackingPage now,
+  // not this table — picking any one of them also drives the two breakdown
+  // charts and every title card above (see H2HTrackingPage.tsx), so they
+  // have to live where those do. The *Options arrays come from the page too:
+  // stateOptions from the full result; lgaOptions narrowed to whichever
+  // state (if any) is picked; wardOptions narrowed to whichever state+LGA
+  // are picked; visitationOptions/coverageOptions narrowed to the current
+  // State/LGA/Ward scope (only statuses/categories that actually occur
+  // there are offered).
   filterState: string | null
   filterLga: string | null
+  filterWard: string | null
+  filterVisitation: VisitationStatus | null
+  filterCoverage: SettlementCoverageCategory | null
   onFilterStateChange: (state: string | null) => void
   onFilterLgaChange: (lga: string | null) => void
+  onFilterWardChange: (ward: string | null) => void
+  onFilterVisitationChange: (status: VisitationStatus | null) => void
+  onFilterCoverageChange: (category: SettlementCoverageCategory | null) => void
   stateOptions: string[]
   lgaOptions: string[]
-  // When set, records has already been filtered by a chart/card selection
-  // above (H2HTrackingPage owns the filter state) — show what's active and
-  // let the user clear it from here too, not just by re-clicking the source.
+  wardOptions: string[]
+  visitationOptions: VisitationStatus[]
+  coverageOptions: SettlementCoverageCategory[]
+  // totalCount is the State/LGA/Ward-scoped count before Visitation/Coverage
+  // narrow it further (records is already both) — shown as "N of M
+  // settlements", same convention as MlosQcPage's table.
+  totalCount?: number
+  // When set, a card or chart segment click (rather than one of the selects
+  // above) is what's currently narrowing `records` further — show what's
+  // active and let the user clear it from here too, not just by re-clicking
+  // the source.
   filterDescription?: string | null
   onClearFilter?: () => void
   // When true, skip this component's own outer card (background/border/
@@ -105,12 +124,16 @@ const filterLabelStyle: CSSProperties = {
 // like state/LGA/ward/settlement, which come from whatever the uploaded DIP
 // file called them).
 //
-// This table also has a State/LGA/Ward/Visitation/Coverage filter row. State
-// and LGA are controlled from H2HTrackingPage (see the props above) since
-// picking either one drives the page's drill-down; Ward/Visitation/Coverage
-// stay local to the table, cascading on top of whatever `records` the page
-// has already scoped to (mirroring PostImplementationChartTable's State/LGA
-// filter pattern for the controlled half).
+// This table's State/LGA/Ward/Visitation/Coverage filter row used to be a
+// mix: State/LGA were controlled by H2HTrackingPage (since picking either
+// drove the page's drill-down) while Ward/Visitation/Coverage stayed local
+// to this component, cascading on top of whatever `records` the page had
+// already scoped to. That meant a Ward/Visitation/Coverage pick only ever
+// narrowed what THIS table showed — it never reached the title cards or the
+// two breakdown charts above, which is exactly the gap the page's full
+// cross-filtering (every element interactive with every other) needed
+// closed. All five are page-controlled props now, the same convention as
+// MlosQcPage's settlement table.
 export default function SettlementListTable({
   records,
   columns,
@@ -119,76 +142,49 @@ export default function SettlementListTable({
   timeSpentColumn = 'Time Spent',
   filterState,
   filterLga,
+  filterWard,
+  filterVisitation,
+  filterCoverage,
   onFilterStateChange,
   onFilterLgaChange,
+  onFilterWardChange,
+  onFilterVisitationChange,
+  onFilterCoverageChange,
   stateOptions,
   lgaOptions,
+  wardOptions,
+  visitationOptions,
+  coverageOptions,
+  totalCount,
   filterDescription,
   onClearFilter,
   bare,
 }: SettlementListTableProps) {
   const [page, setPage] = useState(0)
-  const [filterWard, setFilterWard] = useState<string | null>(null)
-  const [filterVisitation, setFilterVisitation] = useState<VisitationStatus | null>(null)
-  const [filterCoverage, setFilterCoverage] = useState<SettlementCoverageCategory | null>(null)
+  const shownTotal = totalCount ?? records.length
+  const hasActiveFilter = Boolean(filterState || filterLga || filterWard || filterVisitation || filterCoverage)
 
-  // `records` already reflects the page's State/LGA drill scope, so only
-  // Ward/Visitation/Coverage need to cascade locally from here.
-  const wardOptions = useMemo(() => uniqueColumnValues(records, columns.ward), [records, columns.ward])
-
-  const afterWard = useMemo(
-    () => (filterWard && columns.ward ? records.filter((r) => cellValue(r, columns.ward) === filterWard) : records),
-    [records, filterWard, columns.ward],
-  )
-  const visitationOptions = useMemo(() => {
-    const present = new Set(uniqueColumnValues(afterWard, cumColumn))
-    return VISITATION_STATUSES.filter((status) => present.has(status))
-  }, [afterWard, cumColumn])
-
-  const afterVisitation = useMemo(
-    () => (filterVisitation ? afterWard.filter((r) => cellValue(r, cumColumn) === filterVisitation) : afterWard),
-    [afterWard, filterVisitation, cumColumn],
-  )
-  const coverageOptions = useMemo(() => {
-    const present = new Set(uniqueColumnValues(afterVisitation, coverageColumn))
-    return SETTLEMENT_COVERAGE_CATEGORIES.filter((category) => present.has(category))
-  }, [afterVisitation, coverageColumn])
-
-  const filteredRecords = useMemo(
-    () => (filterCoverage ? afterVisitation.filter((r) => cellValue(r, coverageColumn) === filterCoverage) : afterVisitation),
-    [afterVisitation, filterCoverage, coverageColumn],
-  )
-
-  const hasActiveFilter = filterState || filterLga || filterWard || filterVisitation || filterCoverage
-
-  function handleStateChange(state: string | null) {
-    onFilterStateChange(state)
-    setFilterWard(null)
-  }
-  function handleLgaChange(lga: string | null) {
-    onFilterLgaChange(lga)
-    setFilterWard(null)
-  }
   function clearAllFilters() {
     onFilterStateChange(null)
     onFilterLgaChange(null)
-    setFilterWard(null)
-    setFilterVisitation(null)
-    setFilterCoverage(null)
+    onFilterWardChange(null)
+    onFilterVisitationChange(null)
+    onFilterCoverageChange(null)
+    onClearFilter?.()
   }
 
   // A new filter selection (from the page above, or from this table's own
-  // filter row) should land on page 1 of the filtered set, not wherever the
+  // selects) should land on page 1 of the filtered set, not wherever the
   // user happened to be scrolled to before selecting it.
   useEffect(() => {
     setPage(0)
   }, [filterDescription, filterState, filterLga, filterWard, filterVisitation, filterCoverage])
 
-  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / PAGE_SIZE))
+  const totalPages = Math.max(1, Math.ceil(records.length / PAGE_SIZE))
   const clampedPage = Math.min(page, totalPages - 1)
   const pageRecords = useMemo(
-    () => filteredRecords.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE),
-    [filteredRecords, clampedPage],
+    () => records.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE),
+    [records, clampedPage],
   )
 
   return (
@@ -209,7 +205,7 @@ export default function SettlementListTable({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, flexWrap: 'wrap', gap: 8 }}>
         <h3 style={{ fontSize: 14 }}>Settlement list</h3>
         <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-          {filteredRecords.length.toLocaleString()} of {records.length.toLocaleString()} settlements
+          {records.length.toLocaleString()} of {shownTotal.toLocaleString()} settlements
         </div>
       </div>
 
@@ -259,7 +255,7 @@ export default function SettlementListTable({
           <select
             style={selectStyle}
             value={filterState ?? ''}
-            onChange={(e) => handleStateChange(e.target.value || null)}
+            onChange={(e) => onFilterStateChange(e.target.value || null)}
             disabled={stateOptions.length === 0}
           >
             <option value="">All states</option>
@@ -275,7 +271,7 @@ export default function SettlementListTable({
           <select
             style={selectStyle}
             value={filterLga ?? ''}
-            onChange={(e) => handleLgaChange(e.target.value || null)}
+            onChange={(e) => onFilterLgaChange(e.target.value || null)}
             disabled={lgaOptions.length === 0}
           >
             <option value="">All LGAs</option>
@@ -291,7 +287,7 @@ export default function SettlementListTable({
           <select
             style={selectStyle}
             value={filterWard ?? ''}
-            onChange={(e) => setFilterWard(e.target.value || null)}
+            onChange={(e) => onFilterWardChange(e.target.value || null)}
             disabled={wardOptions.length === 0}
           >
             <option value="">All wards</option>
@@ -307,7 +303,7 @@ export default function SettlementListTable({
           <select
             style={selectStyle}
             value={filterVisitation ?? ''}
-            onChange={(e) => setFilterVisitation((e.target.value || null) as VisitationStatus | null)}
+            onChange={(e) => onFilterVisitationChange((e.target.value || null) as VisitationStatus | null)}
             disabled={visitationOptions.length === 0}
           >
             <option value="">All statuses</option>
@@ -323,7 +319,7 @@ export default function SettlementListTable({
           <select
             style={selectStyle}
             value={filterCoverage ?? ''}
-            onChange={(e) => setFilterCoverage((e.target.value || null) as SettlementCoverageCategory | null)}
+            onChange={(e) => onFilterCoverageChange((e.target.value || null) as SettlementCoverageCategory | null)}
             disabled={coverageOptions.length === 0}
           >
             <option value="">All coverage</option>
@@ -354,7 +350,7 @@ export default function SettlementListTable({
         )}
       </div>
 
-      {filteredRecords.length === 0 ? (
+      {records.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>
           No settlements match the current filters.
         </div>
@@ -405,7 +401,7 @@ export default function SettlementListTable({
           <Pager
             page={clampedPage}
             totalPages={totalPages}
-            totalCount={filteredRecords.length}
+            totalCount={records.length}
             pageCount={pageRecords.length}
             onPrev={() => setPage((p) => Math.max(0, p - 1))}
             onNext={() => setPage((p) => Math.min(totalPages - 1, p + 1))}

@@ -2,11 +2,13 @@ import JSZip from 'jszip'
 import Papa from 'papaparse'
 import type { ParsedResult, SettlementRecord } from '../types/h2h'
 import type { MlosRecord, ParsedMlosResult } from '../types/mlos'
+import type { DuplicateCheckerRecord, ParsedDuplicateCheckerResult } from '../types/duplicateChecker'
+import type { CoordinateReviewRecord, ParsedCoordinateReviewResult } from '../types/coordinateReview'
+import { detectSourceNames } from '../utils/coordinateReviewAggregate'
 import type { ParsedReachResult, ReachRecord } from '../types/reach'
 import type { MlosOpsRecord, ParsedMlosOpsDataset } from '../types/mlosOps'
 import type { ParsedTracksResult, TrackPoint } from '../types/compilerTracks'
 import { TRACKS_LAYER_NAME } from '../types/compilerTracks'
-import type { DailyReportChartImage, ParsedDailyReportResult } from '../types/dailyReport'
 import type { ContactRecord, ParsedContactAnalysisResult } from '../types/contactAnalysis'
 import { readGpkgLayer, openGpkgLayer } from '../utils/gpkg'
 import type { GpkgLayerHandle } from '../utils/gpkg'
@@ -118,10 +120,82 @@ export async function parseMlosCsv(blob: Blob, sourceFilename: string): Promise<
 }
 
 /**
+ * Parses the CSV blob returned directly by POST /duplicate-deep-search/
+ * (toolbox/apps/mlos/duplicate_checker.py) — a bare CSV FileResponse, same
+ * shape as the MLoS QC/REACH responses, not a ZIP. Unlike those, this
+ * result's columns are fixed by generate_mapping_table (toolbox/mlos/
+ * validation/review/attributes/deep_search.py) rather than derived from the
+ * uploaded file's own columns, so no column-detection step is needed here.
+ */
+export async function parseDuplicateCheckerCsv(blob: Blob, sourceFilename: string): Promise<ParsedDuplicateCheckerResult> {
+  const csvText = await blob.text()
+
+  const parsed = Papa.parse<DuplicateCheckerRecord>(csvText, {
+    header: true,
+    dynamicTyping: true,
+    skipEmptyLines: true,
+  })
+
+  if (parsed.errors.length > 0) {
+    console.warn('CSV parse warnings:', parsed.errors)
+  }
+
+  // distance comes back as '' (not 0) when
+  // review_ward_settlement_for_duplicates couldn't compute a geodesic
+  // distance for the pair (missing/invalid coordinates) — dynamicTyping
+  // leaves an empty CSV cell as an empty string rather than null, so
+  // normalize that here instead of treating it as a real 0m distance.
+  const records: DuplicateCheckerRecord[] = parsed.data.map((r) => ({
+    ...r,
+    distance: r.distance === null || r.distance === undefined || (r.distance as unknown) === '' ? null : Number(r.distance),
+  }))
+
+  return {
+    records,
+    columns: parsed.meta.fields ?? [],
+    sourceFilename,
+  }
+}
+
+/**
  * Parses the CSV blob returned directly by POST /validation
  * (toolbox/apps/tracking/reach_analysis.py) — a bare CSV FileResponse, same
  * shape as the MLoS QC response, not a ZIP.
  */
+/**
+ * Parses the CSV blob returned directly by POST /coordinate_review/
+ * (toolbox/apps/mlos/coord_review.py) -- a bare CSV FileResponse. Columns
+ * are NOT fixed: the baseline columns are whatever the uploaded settlements
+ * file's own columns were, and one 6-column group per detected source is
+ * appended (see types/coordinateReview.ts). dynamicTyping is left OFF here
+ * (unlike parseMlosCsv/parseDuplicateCheckerCsv above) because pandas writes
+ * booleans as the literal strings "True"/"False", which PapaParse's
+ * dynamicTyping does not reliably normalize -- utils/coordinateReviewAggregate.ts's
+ * toNumber/toBool helpers handle the raw string values explicitly instead.
+ */
+export async function parseCoordinateReviewCsv(blob: Blob, sourceFilename: string): Promise<ParsedCoordinateReviewResult> {
+  const csvText = await blob.text()
+
+  const parsed = Papa.parse<CoordinateReviewRecord>(csvText, {
+    header: true,
+    skipEmptyLines: true,
+  })
+
+  if (parsed.errors.length > 0) {
+    console.warn('CSV parse warnings:', parsed.errors)
+  }
+
+  const columns = parsed.meta.fields ?? []
+  const sourceNames = detectSourceNames(columns)
+
+  return {
+    records: parsed.data,
+    columns,
+    sourceNames,
+    sourceFilename,
+  }
+}
+
 export async function parseReachCsv(blob: Blob, sourceFilename: string): Promise<ParsedReachResult> {
   const csvText = await blob.text()
 
@@ -279,55 +353,12 @@ export function parseCsvText(csvText: string): ParsedMlosOpsDataset {
   }
 }
 
-/**
- * Unzips the campaign_day_report.zip blob POST /reports/daily would return
- * (Content-Disposition: attachment; filename="campaign_day_report.zip") and
- * reads out whichever of the four PNG chart images DailyReport.writer
- * (reporting/reporter.py:98-113) produced, matched by its exact filename:
- *
- *   Day {N} Summary Report.png              -> day.summary
- *   Day {N} LGA Report.png                  -> day.breakdown
- *   Day {N} Cumulative Summary Report.png   -> cumulative.summary
- *   Day {N} Cumulative LGA Report.png       -> cumulative.breakdown
- *
- * where {N} is whatever `campaign_day` the route computed from
- * campaign_day_col. See api/client.ts::submitDailyReport for why no real
- * response has ever been produced to confirm this shape against — this
- * mirrors the writer code directly and is kept ready for when the three
- * blocking bugs documented there are fixed, same "ready but not yet
- * reachable" posture as the ZIP parsers above.
- *
- * `dayNumber` is only used to build the filenames to look for — pass null
- * when the request was cumulative-only (once bug #2 there is fixed) to skip
- * looking for the "Day {N}" prefix at all.
- */
-export async function parseDailyReportZip(blob: Blob, dayNumber: number | null): Promise<ParsedDailyReportResult> {
-  const zip = await JSZip.loadAsync(blob)
-
-  async function readImage(filename: string): Promise<DailyReportChartImage | null> {
-    const entry = zip.file(filename)
-    if (!entry) return null
-    const bytes = await entry.async('blob')
-    return { filename, url: URL.createObjectURL(bytes) }
-  }
-
-  if (dayNumber === null) {
-    return { day: null, cumulative: null }
-  }
-
-  const prefix = `Day ${dayNumber}`
-  const [daySummary, dayBreakdown, cummSummary, cummBreakdown] = await Promise.all([
-    readImage(`${prefix} Summary Report.png`),
-    readImage(`${prefix} LGA Report.png`),
-    readImage(`${prefix} Cumulative Summary Report.png`),
-    readImage(`${prefix} Cumulative LGA Report.png`),
-  ])
-
-  return {
-    day: daySummary && dayBreakdown ? { summary: daySummary, breakdown: dayBreakdown } : null,
-    cumulative: cummSummary && cummBreakdown ? { summary: cummSummary, breakdown: cummBreakdown } : null,
-  }
-}
+// The old parseDailyReportZip (unzipping a fixed-filename 4-PNG
+// "campaign_day_report.zip") has been removed — POST /reports/daily now
+// returns list[PostReport] as plain JSON, the same contract POST
+// /reports/post already used, so there is no ZIP to unzip and no filename
+// convention to match; see api/client.ts::submitDailyReport and
+// types/dailyReport.ts.
 
 export async function parseContactAnalysisCsv(blob: Blob, sourceFilename: string): Promise<ParsedContactAnalysisResult> {
   const csvText = await blob.text()

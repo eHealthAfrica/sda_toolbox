@@ -150,7 +150,6 @@ def generate_settlement_target_area(settlements: gpd.GeoDataFrame, planned_list:
 
             state_settlements = settlements.loc[settlements[admin.state]==state_name]
             state_data = state_boundaries.loc[state_boundaries['statename']==state_name]
-            # building_fp = gpd.read_file(f"C:\Workspace\DEV\Toolbox\src\dev\Building FP {state_name}.parquet")
             building_fp: gpd.GeoDataFrame = ReadDBData(table_ds['buildings_footprint'], True).read_data({'statename': [state_name]})
             state_extent = extent_data.loc[extent_data['statename']==state_name]
 
@@ -176,14 +175,15 @@ def generate_settlement_target_area(settlements: gpd.GeoDataFrame, planned_list:
 
 if __name__ == '__main__':
     from toolbox.spatial_mgr import  convert_to_geodata
-    settlement_df = pd.read_excel(r"C:\Workspace\NEOC\IBRA\August Round\Compiled MLoS.xlsx", sheet_name='CONCAT')
-    planned_settlement_df =  pd.read_excel(r"C:\Workspace\NEOC\IBRA\August Round\Compiled IBRA R2 Settlements.xlsx", sheet_name='CONCAT')
+    settlement_df = pd.read_excel(r"C:\Workspace\NEOC\IBRA\August Round\Compiled MLoS.xlsx")
+    planned_settlement_df =  pd.read_excel(r"C:\Workspace\NEOC\IBRA\August Round\Compiled IBRA R2 Settlements.xlsx")
+
     settlements = convert_to_geodata(settlement_df, GeomColumns('latitude', 'longitude'))
     planned_settlement = convert_to_geodata(planned_settlement_df, GeomColumns('latitude', 'longitude'))
 
-    settlements = settlements.loc[settlements['state_name'].isin(['Niger', 'Yobe'])]
-    planned_settlement = planned_settlement.loc[planned_settlement['state_name'].isin(['Niger', 'Yobe'])]
-    ta_datasets = generate_settlement_target_area(settlements, planned_settlement, Identifier.concat)
+    settlements = settlements.loc[settlements['state_name'].isin(['Adamawa'])]
+    planned_settlement = planned_settlement.loc[planned_settlement['state_name'].isin(['Adamawa'])]
+    ta_datasets = generate_settlement_target_area(settlements, planned_settlement, Identifier.uuid)
     extent, gridded_ta, extent_subset, gridded_ta_subset = ta_datasets.voronoi, ta_datasets.gridded_ta, ta_datasets.voronoi_subset, ta_datasets.gridded_ta_subset
     folder = r"C:\Workspace\NEOC\IBRA\August Round"
     extent.to_file(f"{folder}\\target_area.gpkg", driver='GPKG', layer="settlement_extent_1")

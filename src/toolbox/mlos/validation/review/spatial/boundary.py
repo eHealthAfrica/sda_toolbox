@@ -60,37 +60,16 @@ def check_admin(row: pd.Series, data_admin: AdminColumns, boundary_admin: AdminC
     return None
 
 
-def administrative_info_checks(dataset: pd.DataFrame, state_info: State):
+def administrative_info_checks(dataset: gpd.GeoDataFrame):
     try:
         logging.info('Checking for Boundary issues')
-        admin_checker = partial(get_admin_col, dataset)
-        state, lga, ward = [admin_checker(level) for level in ['state', 'lga', 'ward']]
+        data_admin = AdminColumns.create_by_search(dataset)
 
+        states: list[str] = dataset[data_admin.state].str.title().str.strip().unique().tolist()
         boundary_data: gpd.GeoDataFrame = ReadDBData(
-            CONFIG["DATASETS"]["ward_boundary"], True).read_data({"statename": [state_info.value]})
+            CONFIG["DATASETS"]["ward_boundary"], True).read_data({"statename": states})
 
-        boundary_admin_checker = partial(get_admin_col, boundary_data)
-        boundary_state, boundary_lga, boundary_ward = [
-            boundary_admin_checker(level) for level
-            in ['state', 'lga', 'ward']
-        ]
-
-        if boundary_state is None:
-            boundary_state = 'statename'
-            boundary_data[boundary_state] = state_info.value
-
-        data_admin = AdminColumns(
-            state=state,
-            lga=lga,
-            ward=ward
-        )
-
-        boundary_admin: AdminColumns = AdminColumns(
-            state=boundary_state,
-            lga=boundary_lga,
-            ward=boundary_ward
-        )
-
+        boundary_admin: AdminColumns = AdminColumns('statename', 'lganame', 'wardname')
         joined: gpd.GeoDataFrame = dataset.sjoin(
             boundary_data[[boundary_admin.state, boundary_admin.lga, boundary_admin.ward, 'geometry']],
             how='left',

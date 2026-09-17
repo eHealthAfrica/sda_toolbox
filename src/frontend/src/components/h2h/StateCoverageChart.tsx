@@ -7,7 +7,22 @@ interface StateCoverageChartProps {
   data: StateCoverageEntry[]
   activeState?: string | null
   activeCategory?: SettlementCoverageCategory | null
+  // Clicking a bar segment — a specific {state, category} combination.
   onSelect?: (state: string, category: SettlementCoverageCategory) => void
+  // Clicking a legend swatch — same effect as clicking the matching
+  // CoverageCards card (H2HTrackingPage's toggleCoverage), independent of
+  // whichever state/LGA/ward is currently on the axis.
+  onLegendSelect?: (category: SettlementCoverageCategory) => void
+  // Clicking a row's axis label (the state/LGA/ward name itself, not a
+  // colored segment) — drills into that group, same as picking it in the
+  // settlement list table's State/LGA/Ward select. Omitted at whichever
+  // level has nowhere further to drill (see H2HTrackingPage.tsx).
+  onAxisSelect?: (group: string) => void
+  // "Back up one level" link next to the title, shown once onAxisSelect (or
+  // the table's own selects) has drilled below the top state-level view —
+  // same convention as MlosQcPage's FlagBreakdownChart.
+  onDrillUp?: () => void
+  drillUpLabel?: string
   // Overridable so H2HTrackingPage can drill this same chart from a
   // by-state breakdown down to by-LGA (once a state is selected in the
   // settlement list table) and then by-ward (once an LGA is also
@@ -18,6 +33,39 @@ interface StateCoverageChartProps {
 }
 
 const ROW_HEIGHT = 26
+
+// Renders each Y-axis row label as a clickable "drill into this group" link
+// when onAxisSelect is provided, otherwise falls back to recharts' plain
+// tick text — keeps the default position/size (dy=4, textAnchor="end") so
+// enabling this doesn't shift the axis layout.
+function AxisTick({
+  x,
+  y,
+  payload,
+  onAxisSelect,
+}: {
+  x?: number
+  y?: number
+  payload?: { value: string }
+  onAxisSelect?: (group: string) => void
+}) {
+  const value = payload?.value ?? ''
+  const clickable = !!onAxisSelect
+  return (
+    <text
+      x={x}
+      y={y}
+      dy={4}
+      textAnchor="end"
+      fontSize={11}
+      fill={clickable ? 'var(--color-primary)' : 'var(--color-text-muted)'}
+      style={{ cursor: clickable ? 'pointer' : 'default', textDecoration: clickable ? 'underline' : undefined }}
+      onClick={clickable ? () => onAxisSelect!(value) : undefined}
+    >
+      {value}
+    </text>
+  )
+}
 
 // Replaces the old "planned settlements by LGA" chart — a state-by-state
 // stacked breakdown of the 'Settlement Coverage' column (classify_coverage),
@@ -31,6 +79,10 @@ export default function StateCoverageChart({
   activeState,
   activeCategory,
   onSelect,
+  onLegendSelect,
+  onAxisSelect,
+  onDrillUp,
+  drillUpLabel,
   title = 'Settlement coverage by state',
   emptyMessage = 'No state column detected in the result.',
 }: StateCoverageChartProps) {
@@ -47,27 +99,62 @@ export default function StateCoverageChart({
         marginBottom: 24,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <h3 style={{ fontSize: 14 }}>{title}</h3>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-          {COVERAGE_ORDER.map((category) => (
-            <span
-              key={category}
-              style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--color-text-muted)' }}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+          <h3 style={{ fontSize: 14 }}>{title}</h3>
+          {onDrillUp && (
+            <button
+              type="button"
+              onClick={onDrillUp}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--color-primary)',
+                fontSize: 11.5,
+                fontWeight: 600,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: 0,
+              }}
             >
-              <span
-                style={{
-                  width: 9,
-                  height: 9,
-                  borderRadius: 2,
-                  background: COVERAGE_COLORS[category],
-                  display: 'inline-block',
-                }}
-              />
-              {category}
-            </span>
-          ))}
+              {drillUpLabel ?? '← Back'}
+            </button>
+          )}
         </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {COVERAGE_ORDER.map((category) => {
+            const active = activeCategory === category
+            return (
+              <span
+                key={category}
+                onClick={onLegendSelect ? () => onLegendSelect(category) : undefined}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 11,
+                  color: active ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                  fontWeight: active ? 700 : 400,
+                  cursor: onLegendSelect ? 'pointer' : undefined,
+                }}
+              >
+                <span
+                  style={{
+                    width: 9,
+                    height: 9,
+                    borderRadius: 2,
+                    background: COVERAGE_COLORS[category],
+                    display: 'inline-block',
+                  }}
+                />
+                {category}
+              </span>
+            )
+          })}
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--color-text-muted)', marginBottom: 8 }}>
+        {onAxisSelect ? 'Click a segment to filter, or a name to drill down' : onSelect ? 'Click a segment to filter' : ''}
       </div>
       {data.length === 0 ? (
         <div style={{ padding: 40, textAlign: 'center', color: 'var(--color-text-muted)', fontSize: 13 }}>
@@ -79,7 +166,13 @@ export default function StateCoverageChart({
             <BarChart data={data} layout="vertical" margin={{ left: 8, right: 24, top: 4, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="var(--color-border)" />
               <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-              <YAxis type="category" dataKey="state" width={100} tick={{ fontSize: 11 }} interval={0} />
+              <YAxis
+                type="category"
+                dataKey="state"
+                width={100}
+                tick={(props: any) => <AxisTick {...props} onAxisSelect={onAxisSelect} />}
+                interval={0}
+              />
               <Tooltip />
               {COVERAGE_ORDER.map((category) => (
                 <Bar

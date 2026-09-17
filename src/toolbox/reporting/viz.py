@@ -82,8 +82,8 @@ def make_stacked_bar_chart(dataset: pd.DataFrame, features: list, color_scheme: 
             xanchor="center",
             x=0.5,
         ),
-        height=400,
-        width=700,
+        height=800,
+        width=1500,
         showlegend=True,
         xaxis=dict(
             tickformat=".0%",

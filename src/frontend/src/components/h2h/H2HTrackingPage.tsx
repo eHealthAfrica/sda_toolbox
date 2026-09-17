@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react'
-import { ApiError, fetchH2HArchive, submitH2HTracking } from '../../api/client'
+import { ApiError, fetchH2HArchive, fetchH2HReports, submitH2HTracking } from '../../api/client'
 import { useJobTracker } from '../../state/jobTracker'
+import type { DailyPostReport } from '../../types/dailyReport'
+import DailyReportChartsPanel from '../dailyReport/DailyReportChartsPanel'
 import { parseH2HCsv } from '../../api/parseResult'
 import type { ParsedResult, SettlementCoverageCategory, TrackingFormInput, VisitationStatus } from '../../types/h2h'
+import { SETTLEMENT_COVERAGE_CATEGORIES, VISITATION_STATUSES } from '../../types/h2h'
 import { detectColumns, findCumulativeColumn } from '../../utils/columns'
 import type { DetectedColumns } from '../../utils/columns'
 import { getVisitationOrderFor } from '../../utils/colors'
@@ -11,12 +14,13 @@ import {
   computeCoverageCounts,
   computeStateCoverage,
   computeStateVisitation,
+  computeTotalTimeSpent,
   computeVisitationCounts,
   countUniqueValues,
   matchesColumnValue,
   uniqueColumnValues,
 } from '../../utils/aggregate'
-import type { CountEntry, MapPoint, StateCoverageEntry, StateVisitationEntry } from '../../utils/aggregate'
+import type { MapPoint, StateCoverageEntry, StateVisitationEntry } from '../../utils/aggregate'
 import type { SettlementRecord } from '../../types/h2h'
 import TrackingForm from './TrackingForm'
 import SummaryCards from './SummaryCards'
@@ -31,10 +35,6 @@ import TabbedPanel from '../common/TabbedPanel'
 // Discriminated on `error` so downstream `if (analysis.error)` / `!analysis.error`
 // checks narrow to the right shape without needing `as const` on the returns below
 // (an `as const` on a bare `null` literal isn't valid TS — this sidesteps that).
-// The per-state/LGA/ward breakdown and the summary/coverage/visitation counts
-// used to live here too, computed once from the full record set — they've
-// moved into the drillData memo below since they now need to be recomputed
-// per drill level/scope instead of just once per run.
 type AnalysisResult =
   | { error: string }
   | {
@@ -49,13 +49,21 @@ type AnalysisResult =
     }
 
 // One category filter can be active at a time — set by clicking a
-// coverage/visitation card, or a segment on either breakdown chart. All
-// views below (map, table) read off the same selection; picking a new one
-// replaces whichever was active, matching MlosQcPage's filter convention.
-// This is layered ON TOP OF the drill scope (drillState/drillLga below), not
-// a replacement for it — 'groupCoverage'/'groupVisitation' carry a `level`
-// so a segment clicked on a by-LGA or by-ward chart filters by the right
-// column instead of always assuming "state".
+// coverage/visitation card, a legend swatch on either breakdown chart, a
+// segment on either breakdown chart, or the settlement table's own
+// Visitation/Coverage selects. This is a SEPARATE dimension from the
+// State/LGA/Ward drill below (drillState/drillLga/drillWard): the drill
+// narrows WHICH settlements are in scope geographically, this narrows WHICH
+// settlements match a coverage/visitation value, and the two compose (e.g.
+// "Fully Covered settlements, in Lagos"). A drill change does NOT clear this
+// filter — nothing about picking a different state invalidates "coverage:
+// Fully Covered" — same convention as MlosQcPage's issue/status/proximity
+// filter vs. its own State/LGA/Ward drill.
+//
+// 'groupCoverage'/'groupVisitation' are the compound form a bar-SEGMENT click
+// produces (a specific {value, category} pair at whichever level the chart
+// is currently showing) — a legend click or a card click always produces the
+// plain 'coverage'/'visitation' form instead (category only, no group value).
 type DrillLevel = 'state' | 'lga' | 'ward'
 
 type H2HFilter =
@@ -63,28 +71,6 @@ type H2HFilter =
   | { kind: 'visitation'; status: VisitationStatus }
   | { kind: 'groupCoverage'; level: DrillLevel; value: string; category: SettlementCoverageCategory }
   | { kind: 'groupVisitation'; level: DrillLevel; value: string; status: VisitationStatus }
-
-// Everything that depends on the current drill scope (drillState/drillLga)
-// rather than just on the run's raw results — the breakdown charts' data
-// (by state, or drilled to that state's LGAs, or that LGA's wards), the
-// scoped record/map-point sets the category filter and map/table further
-// narrow, and the summary/coverage/visitation card counts, which should
-// read as "for the current selection" rather than always "for the whole
-// run" once a state or LGA is picked.
-interface DrillData {
-  groupLevel: DrillLevel
-  groupColumn: string | null
-  scopedRecords: SettlementRecord[]
-  scopedMapPoints: MapPoint[]
-  groupCoverage: StateCoverageEntry[]
-  groupVisitation: StateVisitationEntry[]
-  visitationCounts: CountEntry<VisitationStatus>[]
-  coverageCounts: CountEntry<SettlementCoverageCategory>[]
-  totalStates: number
-  totalLgas: number
-  totalWards: number
-  totalSettlements: number
-}
 
 export default function H2HTrackingPage() {
   const [submitting, setSubmitting] = useState(false)
@@ -96,12 +82,16 @@ export default function H2HTrackingPage() {
   // records (the map is still one click away via the tab).
   const [settlementView, setSettlementView] = useState<'map' | 'list'>('list')
   const [filter, setFilter] = useState<H2HFilter | null>(null)
-  // Selecting a state (in the settlement list table's State filter) drills
-  // the two breakdown charts and the summary/coverage/visitation cards down
-  // to that state's LGAs; additionally selecting an LGA drills them further,
-  // to that LGA's wards. See drillData below.
+  // Geographic drill scope. Selecting a State (via the settlement table's
+  // select, or clicking a bar's axis label on either breakdown chart) drills
+  // the two breakdown charts and every title card down to that state's LGAs;
+  // additionally selecting an LGA drills further, to that LGA's wards.
+  // Selecting a Ward narrows the scope one step further still without
+  // introducing a level below it (ward is the bottom of the hierarchy) — see
+  // scopedRecords/groupLevel below.
   const [drillState, setDrillState] = useState<string | null>(null)
   const [drillLga, setDrillLga] = useState<string | null>(null)
+  const [drillWard, setDrillWard] = useState<string | null>(null)
   // The exact CSV bytes POST /tracking/gridded returned — kept as-is (not
   // regenerated from the parsed/reformatted records) so "Download CSV" hands
   // back precisely what the backend produced. Always available the instant
@@ -119,6 +109,13 @@ export default function H2HTrackingPage() {
   const [archiveJobId, setArchiveJobId] = useState<string | null>(null)
   const [downloading, setDownloading] = useState(false)
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  // Daily/Cumulative report charts for this run, fetched separately (see
+  // handleSubmit below) only when the "Generate daily reports" toggle was
+  // on. The settlements CSV above resolves first regardless — this is a
+  // second, non-fatal step: a failure here surfaces as reportsError
+  // alongside the settlement results rather than failing the whole run.
+  const [reports, setReports] = useState<DailyPostReport[] | null>(null)
+  const [reportsError, setReportsError] = useState<string | null>(null)
   const { startJob, completeJob, failJob } = useJobTracker()
 
   async function handleSubmit(input: TrackingFormInput) {
@@ -128,9 +125,12 @@ export default function H2HTrackingPage() {
     setFilter(null)
     setDrillState(null)
     setDrillLga(null)
+    setDrillWard(null)
     setCsvBlob(null)
     setArchiveJobId(null)
     setDownloadError(null)
+    setReports(null)
+    setReportsError(null)
     const jobId = startJob('h2h', input.tracksFile?.name ?? 'H2H tracking run')
     try {
       const { csvBlob: newCsvBlob, jobId: newArchiveJobId } = await submitH2HTracking(input)
@@ -139,6 +139,25 @@ export default function H2HTrackingPage() {
       setCsvBlob(newCsvBlob)
       setArchiveJobId(newArchiveJobId)
       completeJob(jobId)
+
+      // A second, independent fetch off the same job id — a failure here
+      // (most likely a 404, e.g. h2h_cache.py's peek_result not deployed
+      // yet) is surfaced via reportsError without touching `error` or
+      // failing the job the settlement results already completed under.
+      if (input.generateReport && newArchiveJobId) {
+        try {
+          const fetchedReports = await fetchH2HReports(newArchiveJobId)
+          setReports(fetchedReports)
+        } catch (reportsErr) {
+          if (reportsErr instanceof ApiError) {
+            const detailText =
+              typeof reportsErr.detail === 'string' ? reportsErr.detail : JSON.stringify(reportsErr.detail)
+            setReportsError(`${reportsErr.message}${detailText ? ` — ${detailText}` : ''}`)
+          } else {
+            setReportsError('Could not load the daily report charts for this run.')
+          }
+        }
+      }
     } catch (err) {
       if (err instanceof ApiError) {
         const detailText =
@@ -244,11 +263,13 @@ export default function H2HTrackingPage() {
     }
   }, [result, mopUp])
 
-  // State/LGA options for the settlement list table's drill selects, always
-  // built from the FULL result (not the current drill scope) so every state
-  // stays pickable regardless of what's currently selected — LGA options are
-  // narrowed to the selected state, same cascading convention as
-  // PostImplementationChartTable.
+  const columns = analysis && analysis.error === null ? analysis.columns : null
+
+  // State/LGA/Ward select options for the settlement list table, always
+  // built from the FULL result (not the current drill scope) so every value
+  // stays pickable regardless of what's currently selected — cascading the
+  // same way MlosQcPage's do: lgaOptions narrowed to whichever state (if
+  // any) is picked, wardOptions narrowed to whichever state+LGA are picked.
   const stateOptions = useMemo(() => {
     if (!analysis || analysis.error !== null || !analysis.columns.state) return []
     return uniqueColumnValues(analysis.records, analysis.columns.state)
@@ -262,44 +283,49 @@ export default function H2HTrackingPage() {
     return uniqueColumnValues(scope, analysis.columns.lga)
   }, [analysis, drillState])
 
-  const drillData = useMemo<DrillData | null>(() => {
-    if (!analysis || analysis.error !== null) return null
-    const { columns, records, mapPoints, cumColumn, activeVisitationOrder } = analysis
-
-    const groupLevel: DrillLevel = drillLga ? 'ward' : drillState ? 'lga' : 'state'
-    const groupColumn = groupLevel === 'state' ? columns.state : groupLevel === 'lga' ? columns.lga : columns.ward
-
-    let scopedRecords = records
-    if (drillState) scopedRecords = scopedRecords.filter((r) => matchesColumnValue(r, columns.state, drillState))
-    if (drillLga) scopedRecords = scopedRecords.filter((r) => matchesColumnValue(r, columns.lga, drillLga))
-
-    let scopedMapPoints = mapPoints
-    if (drillState) scopedMapPoints = scopedMapPoints.filter((p) => p.state === drillState)
-    if (drillLga) scopedMapPoints = scopedMapPoints.filter((p) => p.lga === drillLga)
-
-    return {
-      groupLevel,
-      groupColumn,
-      scopedRecords,
-      scopedMapPoints,
-      groupCoverage: groupColumn ? computeStateCoverage(scopedRecords, groupColumn) : [],
-      groupVisitation: groupColumn ? computeStateVisitation(scopedRecords, groupColumn, cumColumn) : [],
-      visitationCounts: computeVisitationCounts(scopedRecords, cumColumn, activeVisitationOrder),
-      coverageCounts: computeCoverageCounts(scopedRecords),
-      totalStates: columns.state ? countUniqueValues(scopedRecords, columns.state) : 0,
-      totalLgas: columns.lga ? countUniqueValues(scopedRecords, columns.lga) : 0,
-      totalWards: columns.ward ? countUniqueValues(scopedRecords, columns.ward) : 0,
-      totalSettlements: scopedRecords.length,
-    }
+  const wardOptions = useMemo(() => {
+    if (!analysis || analysis.error !== null || !analysis.columns.ward) return []
+    let scope = analysis.records
+    if (drillState) scope = scope.filter((r) => matchesColumnValue(r, analysis.columns.state, drillState))
+    if (drillLga) scope = scope.filter((r) => matchesColumnValue(r, analysis.columns.lga, drillLga))
+    return uniqueColumnValues(scope, analysis.columns.ward)
   }, [analysis, drillState, drillLga])
 
+  // Records narrowed by the State/LGA/Ward drill only — the "full picture"
+  // for whichever geography is currently selected, before the coverage/
+  // visitation filter narrows it further. See coverageBase/visitationBase
+  // below for why the breakdown charts and coverage/visitation cards don't
+  // always read from filteredRecords directly.
+  const scopedRecords = useMemo(() => {
+    if (!analysis || analysis.error !== null) return []
+    const { columns: cols, records } = analysis
+    let recs = records
+    if (drillState && cols.state) recs = recs.filter((r) => matchesColumnValue(r, cols.state, drillState))
+    if (drillLga && cols.lga) recs = recs.filter((r) => matchesColumnValue(r, cols.lga, drillLga))
+    if (drillWard && cols.ward) recs = recs.filter((r) => matchesColumnValue(r, cols.ward, drillWard))
+    return recs
+  }, [analysis, drillState, drillLga, drillWard])
+
+  const scopedMapPoints = useMemo(() => {
+    if (!analysis || analysis.error !== null) return []
+    let pts = analysis.mapPoints
+    if (drillState) pts = pts.filter((p) => p.state === drillState)
+    if (drillLga) pts = pts.filter((p) => p.lga === drillLga)
+    if (drillWard) pts = pts.filter((p) => p.ward === drillWard)
+    return pts
+  }, [analysis, drillState, drillLga, drillWard])
+
+  const groupColumnFor = (level: DrillLevel): string | null =>
+    !columns ? null : level === 'state' ? columns.state : level === 'lga' ? columns.lga : columns.ward
+
+  const groupLevel: DrillLevel = drillLga ? 'ward' : drillState ? 'lga' : 'state'
+  const groupColumn = groupColumnFor(groupLevel)
+
   const filteredRecords = useMemo(() => {
-    if (!analysis || analysis.error !== null || !drillData) return []
-    const base = drillData.scopedRecords
+    if (!analysis || analysis.error !== null) return []
+    const base = scopedRecords
     if (!filter) return base
-    const { columns, cumColumn } = analysis
-    const groupColumnFor = (level: DrillLevel) =>
-      level === 'state' ? columns.state : level === 'lga' ? columns.lga : columns.ward
+    const { cumColumn } = analysis
     switch (filter.kind) {
       case 'coverage':
         return base.filter((r) => r['Settlement Coverage'] === filter.category)
@@ -316,11 +342,11 @@ export default function H2HTrackingPage() {
       default:
         return base
     }
-  }, [analysis, drillData, filter])
+  }, [analysis, scopedRecords, filter])
 
   const filteredMapPoints = useMemo(() => {
-    if (!analysis || analysis.error !== null || !drillData) return []
-    const base = drillData.scopedMapPoints
+    if (!analysis || analysis.error !== null) return []
+    const base = scopedMapPoints
     if (!filter) return base
     // Explicit return type (not `as const` on the ternary itself — TS1355:
     // a const assertion can't wrap a conditional expression, only a literal)
@@ -340,7 +366,54 @@ export default function H2HTrackingPage() {
       default:
         return base
     }
-  }, [analysis, drillData, filter])
+  }, [analysis, scopedMapPoints, filter])
+
+  // Each element's own dimension reads from scopedRecords (drill only) so it
+  // stays fully interactive/browsable; every other dimension reads from
+  // filteredRecords (drill + whatever the other dimension's filter is) —
+  // same self-scope-vs-cross-scope rule as MlosQcPage's charts. Both the
+  // plain and the group-compound form of a filter count as "this dimension
+  // is active" for that purpose.
+  const coverageBase = filter?.kind === 'coverage' || filter?.kind === 'groupCoverage' ? scopedRecords : filteredRecords
+  const visitationBase = filter?.kind === 'visitation' || filter?.kind === 'groupVisitation' ? scopedRecords : filteredRecords
+
+  const coverageCounts = useMemo(() => computeCoverageCounts(coverageBase), [coverageBase])
+  const visitationCounts = useMemo(
+    () => (analysis && analysis.error === null ? computeVisitationCounts(visitationBase, analysis.cumColumn, analysis.activeVisitationOrder) : []),
+    [visitationBase, analysis],
+  )
+  const groupCoverage: StateCoverageEntry[] = useMemo(
+    () => (groupColumn ? computeStateCoverage(coverageBase, groupColumn) : []),
+    [coverageBase, groupColumn],
+  )
+  const groupVisitation: StateVisitationEntry[] = useMemo(
+    () => (groupColumn && analysis && analysis.error === null ? computeStateVisitation(visitationBase, groupColumn, analysis.cumColumn) : []),
+    [visitationBase, groupColumn, analysis],
+  )
+
+  // Visitation/Coverage select options on the settlement table — narrowed to
+  // the current State/LGA/Ward scope (only values that actually occur there
+  // are offered), same as stateOptions/lgaOptions/wardOptions above, but
+  // NOT cascaded against each other — each always reflects the full
+  // geography scope regardless of what the other is currently set to, so
+  // picking one doesn't hide options the other might still want.
+  const visitationOptions = useMemo(() => {
+    if (!analysis || analysis.error !== null) return []
+    const present = new Set(uniqueColumnValues(scopedRecords, analysis.cumColumn))
+    return VISITATION_STATUSES.filter((status) => present.has(status))
+  }, [analysis, scopedRecords])
+  const coverageOptions = useMemo(() => {
+    const present = new Set(uniqueColumnValues(scopedRecords, 'Settlement Coverage'))
+    return SETTLEMENT_COVERAGE_CATEGORIES.filter((category) => present.has(category))
+  }, [scopedRecords])
+
+  // Title cards always describe "what's currently in view" — full drill +
+  // filter scope — same convention as MlosQcPage's summary cards.
+  const totalSettlements = filteredRecords.length
+  const totalStates = columns?.state ? countUniqueValues(filteredRecords, columns.state) : 0
+  const totalLgas = columns?.lga ? countUniqueValues(filteredRecords, columns.lga) : 0
+  const totalWards = columns?.ward ? countUniqueValues(filteredRecords, columns.ward) : 0
+  const totalTimeSpentMins = useMemo(() => computeTotalTimeSpent(filteredRecords), [filteredRecords])
 
   const filterDescription = useMemo(() => {
     if (!filter) return null
@@ -361,45 +434,79 @@ export default function H2HTrackingPage() {
 
   // Toggle semantics throughout: clicking the already-active source clears
   // the filter instead of re-applying it, matching the "click to clear" hint
-  // StatCard shows once a card is active.
+  // StatCard shows once a card is active. A card, a legend swatch, or the
+  // table's own Visitation/Coverage select all funnel into these same two
+  // functions (or the plain-select variants below) — one source of truth
+  // for "is coverage/visitation currently filtered, and to what". Clicking
+  // while a group-compound filter is active for the SAME category/status
+  // clears it too (dropping its group-value constraint along with it);
+  // a DIFFERENT category/status replaces it with the plain (ungrouped) form.
   function toggleCoverage(category: SettlementCoverageCategory) {
-    setFilter((f) => (f?.kind === 'coverage' && f.category === category ? null : { kind: 'coverage', category }))
+    setFilter((f) => {
+      const alreadyActive =
+        (f?.kind === 'coverage' && f.category === category) || (f?.kind === 'groupCoverage' && f.category === category)
+      return alreadyActive ? null : { kind: 'coverage', category }
+    })
   }
   function toggleVisitation(status: VisitationStatus) {
-    setFilter((f) => (f?.kind === 'visitation' && f.status === status ? null : { kind: 'visitation', status }))
+    setFilter((f) => {
+      const alreadyActive =
+        (f?.kind === 'visitation' && f.status === status) || (f?.kind === 'groupVisitation' && f.status === status)
+      return alreadyActive ? null : { kind: 'visitation', status }
+    })
   }
   function toggleGroupCoverage(value: string, category: SettlementCoverageCategory) {
-    const level = drillData?.groupLevel ?? 'state'
     setFilter((f) =>
-      f?.kind === 'groupCoverage' && f.level === level && f.value === value && f.category === category
+      f?.kind === 'groupCoverage' && f.level === groupLevel && f.value === value && f.category === category
         ? null
-        : { kind: 'groupCoverage', level, value, category },
+        : { kind: 'groupCoverage', level: groupLevel, value, category },
     )
   }
   function toggleGroupVisitation(value: string, status: VisitationStatus) {
-    const level = drillData?.groupLevel ?? 'state'
     setFilter((f) =>
-      f?.kind === 'groupVisitation' && f.level === level && f.value === value && f.status === status
+      f?.kind === 'groupVisitation' && f.level === groupLevel && f.value === value && f.status === status
         ? null
-        : { kind: 'groupVisitation', level, value, status },
+        : { kind: 'groupVisitation', level: groupLevel, value, status },
     )
   }
 
-  // Picking a state (or LGA) in the settlement list table drills the
-  // breakdown charts/cards down a level — see drillData above — and clears
-  // any active segment/card category filter, since it was scoped to
-  // whatever level was showing before the drill changed.
+  // "Set or clear" variants for the settlement table's own Visitation/
+  // Coverage selects — a select isn't a toggle (picking a value always
+  // means "show this value", not "show this value unless it's already
+  // showing"), but choosing the blank "All ___" option should only clear
+  // the filter if it's actually this dimension that's currently active
+  // (otherwise a Visitation select showing "All statuses" because a
+  // Coverage filter is active would wrongly clear that Coverage filter).
+  function handleFilterCoverageSelect(category: SettlementCoverageCategory | null) {
+    if (category) setFilter({ kind: 'coverage', category })
+    else if (filter?.kind === 'coverage') setFilter(null)
+  }
+  function handleFilterVisitationSelect(status: VisitationStatus | null) {
+    if (status) setFilter({ kind: 'visitation', status })
+    else if (filter?.kind === 'visitation') setFilter(null)
+  }
+
+  // Drill semantics: picking a new State clears LGA and Ward under it;
+  // picking a new LGA clears Ward under it; Ward has nothing under it, so
+  // setting it doesn't cascade further. Unlike the filter above, drilling
+  // does NOT clear the active coverage/visitation filter — nothing about
+  // picking a different state invalidates "coverage: Fully Covered", same
+  // convention as MlosQcPage's drill vs. category filter. Shared by the
+  // table's selects and both breakdown charts' axis-label clicks/back
+  // links — one set of handlers for every entry point into the same state.
   function handleDrillStateChange(state: string | null) {
     setDrillState(state)
     setDrillLga(null)
-    setFilter(null)
+    setDrillWard(null)
   }
   function handleDrillLgaChange(lga: string | null) {
     setDrillLga(lga)
-    setFilter(null)
+    setDrillWard(null)
+  }
+  function handleDrillWardChange(ward: string | null) {
+    setDrillWard(ward)
   }
 
-  const groupLevel = drillData?.groupLevel ?? 'state'
   const coverageTitle =
     groupLevel === 'state'
       ? 'Settlement coverage by state'
@@ -418,6 +525,30 @@ export default function H2HTrackingPage() {
       : groupLevel === 'lga'
       ? 'No LGA column detected in the result.'
       : 'No ward column detected in the result.'
+
+  // A click on a bar's axis label always drills — at 'ward', the bottom of
+  // the hierarchy, that means narrowing the scope to exactly that ward
+  // (drillWard) rather than opening up a level below it, since there isn't
+  // one.
+  const breakdownOnAxisSelect =
+    groupLevel === 'state' ? handleDrillStateChange : groupLevel === 'lga' ? handleDrillLgaChange : handleDrillWardChange
+  const breakdownOnDrillUp =
+    groupLevel === 'lga' ? () => handleDrillStateChange(null) : groupLevel === 'ward' ? () => handleDrillLgaChange(null) : undefined
+  const breakdownDrillUpLabel = groupLevel === 'lga' ? '← All states' : groupLevel === 'ward' ? `← All LGAs in ${drillState}` : undefined
+
+  const activeCoverageCategory =
+    filter?.kind === 'coverage' ? filter.category : filter?.kind === 'groupCoverage' ? filter.category : null
+  const activeVisitationStatus =
+    filter?.kind === 'visitation' ? filter.status : filter?.kind === 'groupVisitation' ? filter.status : null
+  const activeGroupValue =
+    filter?.kind === 'groupCoverage' || filter?.kind === 'groupVisitation'
+      ? filter.level === groupLevel
+        ? filter.value
+        : null
+      : null
+
+  const filterVisitationValue = filter?.kind === 'visitation' ? filter.status : null
+  const filterCoverageValue = filter?.kind === 'coverage' ? filter.category : null
 
   return (
     <div>
@@ -451,7 +582,7 @@ export default function H2HTrackingPage() {
         </div>
       )}
 
-      {analysis && analysis.error === null && drillData && (
+      {analysis && analysis.error === null && columns && (
         <>
           {(csvBlob || archiveJobId || downloadError) && (
             <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -503,41 +634,46 @@ export default function H2HTrackingPage() {
           )}
 
           <SummaryCards
-            totalSettlements={drillData.totalSettlements}
-            totalStates={drillData.totalStates}
-            totalLgas={drillData.totalLgas}
-            totalWards={drillData.totalWards}
+            totalSettlements={totalSettlements}
+            totalStates={totalStates}
+            totalLgas={totalLgas}
+            totalWards={totalWards}
+            totalTimeSpentMins={totalTimeSpentMins}
           />
-          <CoverageCards
-            counts={drillData.coverageCounts}
-            activeCategory={filter?.kind === 'coverage' ? filter.category : null}
-            onSelect={toggleCoverage}
-          />
+          <CoverageCards counts={coverageCounts} activeCategory={activeCoverageCategory} onSelect={toggleCoverage} />
           <VisitationCards
-            counts={drillData.visitationCounts}
+            counts={visitationCounts}
             cumColumnLabel={analysis.cumColumn}
-            activeStatus={filter?.kind === 'visitation' ? filter.status : null}
+            activeStatus={activeVisitationStatus}
             onSelect={toggleVisitation}
           />
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 20 }}>
             <StateCoverageChart
-              data={drillData.groupCoverage}
+              data={groupCoverage}
               title={coverageTitle}
               emptyMessage={groupEmptyMessage}
-              activeState={filter?.kind === 'groupCoverage' && filter.level === groupLevel ? filter.value : null}
-              activeCategory={filter?.kind === 'groupCoverage' && filter.level === groupLevel ? filter.category : null}
+              activeState={activeGroupValue}
+              activeCategory={activeCoverageCategory}
               onSelect={toggleGroupCoverage}
+              onLegendSelect={toggleCoverage}
+              onAxisSelect={breakdownOnAxisSelect}
+              onDrillUp={breakdownOnDrillUp}
+              drillUpLabel={breakdownDrillUpLabel}
             />
             <StateVisitationChart
-              data={drillData.groupVisitation}
+              data={groupVisitation}
               cumColumnLabel={analysis.cumColumn}
               title={visitationTitle}
               emptyMessage={groupEmptyMessage}
               activeOrder={analysis.activeVisitationOrder}
-              activeState={filter?.kind === 'groupVisitation' && filter.level === groupLevel ? filter.value : null}
-              activeStatus={filter?.kind === 'groupVisitation' && filter.level === groupLevel ? filter.status : null}
+              activeState={activeGroupValue}
+              activeStatus={activeVisitationStatus}
               onSelect={toggleGroupVisitation}
+              onLegendSelect={toggleVisitation}
+              onAxisSelect={breakdownOnAxisSelect}
+              onDrillUp={breakdownOnDrillUp}
+              drillUpLabel={breakdownDrillUpLabel}
             />
           </div>
 
@@ -565,14 +701,24 @@ export default function H2HTrackingPage() {
                 content: (
                   <SettlementListTable
                     records={filteredRecords}
-                    columns={analysis.columns}
+                    columns={columns}
                     cumColumn={analysis.cumColumn}
+                    totalCount={scopedRecords.length}
                     filterState={drillState}
                     filterLga={drillLga}
+                    filterWard={drillWard}
+                    filterVisitation={filterVisitationValue}
+                    filterCoverage={filterCoverageValue}
                     onFilterStateChange={handleDrillStateChange}
                     onFilterLgaChange={handleDrillLgaChange}
+                    onFilterWardChange={handleDrillWardChange}
+                    onFilterVisitationChange={handleFilterVisitationSelect}
+                    onFilterCoverageChange={handleFilterCoverageSelect}
                     stateOptions={stateOptions}
                     lgaOptions={lgaOptions}
+                    wardOptions={wardOptions}
+                    visitationOptions={visitationOptions}
+                    coverageOptions={coverageOptions}
                     filterDescription={filterDescription}
                     onClearFilter={() => setFilter(null)}
                     bare
@@ -581,6 +727,36 @@ export default function H2HTrackingPage() {
               },
             ]}
           />
+
+          {(reports || reportsError) && (
+            <div style={{ marginTop: 32 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Daily report charts</h3>
+              <p style={{ fontSize: 12.5, color: 'var(--color-text-muted)', marginTop: 0, marginBottom: 16 }}>
+                Generated from this run by the same Daily Report pipeline as Reporting → Daily Report.
+              </p>
+              {reportsError && (
+                <div
+                  style={{
+                    background: '#fdecea',
+                    border: '1px solid var(--color-critical)',
+                    color: '#7a2020',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '10px 14px',
+                    fontSize: 13,
+                    marginBottom: 16,
+                  }}
+                >
+                  {reportsError}
+                </div>
+              )}
+              {reports && reports.length > 0 && <DailyReportChartsPanel reports={reports} />}
+              {reports && reports.length === 0 && (
+                <div style={{ fontSize: 12.5, color: 'var(--color-text-muted)', padding: '12px 0' }}>
+                  The response contained no report figures.
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
 

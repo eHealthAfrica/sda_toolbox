@@ -146,25 +146,25 @@ const QUICK_TOOLS: QuickTool[] = [
  * Home dashboard — the real-app counterpart to the approved dashboard design
  * in sda_toolbox_frontend_design/mockup.html.
  *
- * Three of that mockup's sections carry over here because they're either
- * pure navigation (Quick access), a fact this codebase can state honestly
- * (Tool status, computed from the actual caveat cards already shipped on
- * each of the 14 real pages), or now backed by a real backend job log
- * (Job activity, see GET /jobs/summary + GET /jobs — toolbox/job_tracker/) —
- * every real tool endpoint is logged automatically by JobLoggingMiddleware,
- * so Active/Completed/Failed here are durable, server-side counts across
- * every user of this instance, not a per-tab tally that resets on refresh
- * like the state/jobTracker.tsx counter this replaced.
+ * Two of that mockup's sections carry over here: pure navigation (Quick
+ * access), and Job activity, which is backed by a real backend job log (see
+ * GET /jobs/summary + GET /jobs — toolbox/job_tracker/) — every real tool
+ * endpoint is logged automatically by JobLoggingMiddleware, so Active/
+ * Completed/Failed here are durable, server-side counts across every user
+ * of this instance, not a per-tab tally that resets on refresh like the
+ * state/jobTracker.tsx counter this replaced.
  *
- * The rest of the mockup's dashboard — the settlement/QC/coverage stat
- * tiles, the coverage map and visitation charts, the Recent jobs table —
- * was explicit sample data even in the mockup itself ("sample data for
- * design purposes"), standing in for analytics aggregates that don't exist
- * in the real backend at all (unlike job activity, which now has a real
- * endpoint of its own — see above). Rather than ship invented numbers that
- * would look live to an actual analyst, those sections stay out here until
- * there's a real endpoint behind them — same posture as every other page
- * in this app.
+ * The mockup's "Tool status" card (a 12/2 live-vs-blocked split) isn't
+ * shown here — it was hand-maintained static text, not a number computed
+ * from anything live, so it stayed out. The rest of the mockup's dashboard —
+ * the settlement/QC/coverage stat tiles, the coverage map and visitation
+ * charts, the Recent jobs table — was explicit sample data even in the
+ * mockup itself ("sample data for design purposes"), standing in for
+ * analytics aggregates that don't exist in the real backend at all (unlike
+ * job activity, which has a real endpoint of its own — see above). Rather
+ * than ship invented numbers that would look live to an actual analyst,
+ * those sections stay out here until there's a real endpoint behind them —
+ * same posture as every other page in this app.
  */
 export default function DashboardPage({ onNavigate }: DashboardPageProps) {
   const [summary, setSummary] = useState<JobsSummary | null>(null)
@@ -282,55 +282,10 @@ export default function DashboardPage({ onNavigate }: DashboardPageProps) {
         ) : (
           <div style={{ fontSize: 12, color: 'var(--color-text-muted)', padding: '14px 0 2px' }}>
             {fetchError
-              ? 'Job activity is temporarily unavailable — see note below.'
+              ? "Job activity is temporarily unavailable — couldn't reach the job log."
               : "No submissions yet — run any tool and it'll show up here."}
           </div>
         )}
-        <div className="note">
-          <svg viewBox="0 0 16 16" fill="none">
-            <circle cx="8" cy="8" r="6.4" stroke="currentColor" strokeWidth="1.3" />
-            <path d="M8 7.2v4M8 5.1v.1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-          <div>
-            <b>Scope —</b> these counts come from a backend job log (GET /jobs/summary, GET /jobs —
-            toolbox/job_tracker/), not a client-side tally: every real tool endpoint is recorded automatically by
-            JobLoggingMiddleware the moment it's called, for every user of this instance, and the row persists in a
-            small SQLite store that survives a page reload or a container restart (a job still "active" when the
-            backend restarts is reconciled to "failed — interrupted" on the next startup, so it can't get stuck).
-            This card polls every 15 seconds while open, so activity from another tab or another analyst shows up
-            here too.{fetchError ? ' The last poll failed — retrying automatically.' : ''}
-          </div>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="card-title">Tool status</div>
-        <div className="card-sub">Across all 14 pages built against a real endpoint in this app</div>
-        <div className="grid grid-g2">
-          <div className="stat-tile" style={{ borderLeft: '3px solid var(--color-good)' }}>
-            <div className="stat-label">Live &amp; working</div>
-            <div className="stat-value tabular">12</div>
-            <div className="stat-foot">calls its real endpoint, no blocking bug</div>
-          </div>
-          <div className="stat-tile" style={{ borderLeft: '3px solid var(--color-critical)' }}>
-            <div className="stat-label">Blocked by known backend bugs</div>
-            <div className="stat-value tabular">2</div>
-            <div className="stat-foot">Combine LGA Data · Daily Report — see each page's caveat card</div>
-          </div>
-        </div>
-        <div className="note">
-          <svg viewBox="0 0 16 16" fill="none">
-            <circle cx="8" cy="8" r="6.4" stroke="currentColor" strokeWidth="1.3" />
-            <path d="M8 7.2v4M8 5.1v.1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-          <div>
-            <b>Design note —</b> the mockup's fuller dashboard (settlement &amp; QC stat tiles, coverage map,
-            visitation chart) depicted analytics aggregates that don't exist behind any real endpoint today — that
-            mockup's own numbers were explicitly sample data. Job activity above is the one exception: it's backed
-            by a real backend job log now (see the note on that card), so it's real rather than left out. The rest
-            can follow once there's real settlement analytics to drive it.
-          </div>
-        </div>
       </div>
     </div>
   )

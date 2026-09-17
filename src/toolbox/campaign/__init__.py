@@ -7,6 +7,7 @@ import geopandas as gpd
 
 from toolbox.mlos import detect_unique_admin_field, construct_new_unique, get_admin_col
 from toolbox.models import CampaignDay, State
+from toolbox.reporting import PostReport
 
 
 @dataclass
@@ -14,7 +15,7 @@ class CampaignDatasets:
     settlements: pd.DataFrame
     tracks: gpd.GeoDataFrame
     campaign_day: CampaignDay
-    reports: io.BytesIO = None
+    reports: list[PostReport] = None
     _unique_code: str = None
 
     def __post_init__(self):

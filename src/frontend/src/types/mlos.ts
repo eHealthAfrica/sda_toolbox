@@ -1,9 +1,3 @@
-import { STATE_OPTIONS } from './h2h'
-import type { StateName } from './h2h'
-
-export { STATE_OPTIONS }
-export type { StateName }
-
 // Mirrors toolbox/mlos/validation/review/run_validate.py + prefilter.py — the
 // validation_status column written onto every row of the QC'ed MLoS CSV.
 // 'Validated Unknown' is set upfront for rows where is_invalid is True
@@ -19,7 +13,6 @@ export type ValidationStatus = (typeof VALIDATION_STATUS_ORDER)[number]
 
 export interface QcFormInput {
   mlosFile: File | null
-  state: StateName | null
   standardize: boolean
   consistency: boolean
   deepSearch: boolean

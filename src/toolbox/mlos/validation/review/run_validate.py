@@ -7,7 +7,6 @@ from toolbox.mlos import evaluate_settlement_validation
 from toolbox.spatial_mgr import GeomColumns
 from toolbox.mlos import MLoSAttributes
 from toolbox.configs import CONFIG
-from toolbox.models import State
 from toolbox.mlos.validation.review import (
     find_duplicate_attributes,
     validate_attributes_entry,
@@ -16,7 +15,7 @@ from toolbox.mlos.validation.review import (
 )
 
 
-async def run_settlements_qc(settlement: pd.DataFrame, admin_code: str, state: State, consistency: bool, deep_search: bool)-> pd.DataFrame:
+async def run_settlements_qc(settlement: pd.DataFrame, admin_code: str, consistency: bool, deep_search: bool)-> pd.DataFrame:
     geo_columns: GeomColumns = GeomColumns.get_geom_cols(settlement, True)
     mlos_attribute = MLoSAttributes()(settlement, CONFIG.get('ATTRIBUTE_COLUMNS'))
     settlement = flag_validated_unknown_settlements(settlement, mlos_attribute)
@@ -27,7 +26,7 @@ async def run_settlements_qc(settlement: pd.DataFrame, admin_code: str, state: S
 
     print('Running QC Checks...')
     attribute_checked = find_duplicate_attributes(settlement, geo_columns, admin_code)
-    spatially_checked = run_spatial_checks(attribute_checked, state, geo_columns, admin_code)
+    spatially_checked = run_spatial_checks(attribute_checked, geo_columns, admin_code)
     entries_checked = validate_attributes_entry(spatially_checked, mlos_attribute)
 
     if consistency:
@@ -54,7 +53,9 @@ async def run_settlements_qc(settlement: pd.DataFrame, admin_code: str, state: S
 
 if __name__ == '__main__':
     import asyncio
-    mlos = pd.read_csv(r"C:\Users\enyinnaya.nwaiwu\Downloads\MLoS May 2026_fixed_20260525_fixed_20260525.csv")
+    settlement = pd.read_excel(r"C:\Workspace\NEOC\IBRA\August Round\Compiled MLoS.xlsx")
     asyncio.run(
-        run_settlements_qc(mlos, 'unique_code', State.Kebbi, False, False)
+        run_settlements_qc(
+            settlement, 'unique_code', False, False
+        )
     )

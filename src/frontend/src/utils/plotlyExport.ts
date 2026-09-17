@@ -1,6 +1,17 @@
 import Plotly from 'plotly.js-basic-dist-min'
 import JSZip from 'jszip'
-import type { PostReport } from '../types/postImplementation'
+import type { Data, Layout } from 'plotly.js'
+
+// Generalized to a minimal structural interface rather than importing
+// types/postImplementation.ts's own PostReport directly — Daily Report's
+// PostReport (types/dailyReport.ts::DailyPostReport) has a differently-typed
+// `level` union and an `lga: string | null` rather than `string`, but only
+// `figure` and `save_name` are ever actually touched below, so either type
+// satisfies this one structurally with no cast needed on either call site.
+export interface ExportableReport {
+  figure: { data: Data[]; layout: Partial<Layout> }
+  save_name: string
+}
 
 // Every save_name the backend sends ends in ".png" (reporter.py builds it
 // that way regardless of level) — reused as-is for the exported image's own
@@ -17,7 +28,7 @@ const IMAGE_HEIGHT = 600
 // both lighter and artifact-free for this content; JPEG tends to bloat and
 // visibly smear text at any reasonable quality on charts like these.
 
-async function reportToImageBlob(report: PostReport): Promise<Blob> {
+async function reportToImageBlob(report: ExportableReport): Promise<Blob> {
   const dataUrl = await Plotly.toImage(
     { data: report.figure.data, layout: report.figure.layout },
     { format: IMAGE_FORMAT, width: IMAGE_WIDTH, height: IMAGE_HEIGHT },
@@ -36,13 +47,13 @@ function triggerBlobDownload(blob: Blob, filename: string) {
 }
 
 /** Renders one report's Plotly figure to a PNG and downloads it directly — the chart table's per-row Download button. */
-export async function downloadReportImage(report: PostReport): Promise<void> {
+export async function downloadReportImage(report: ExportableReport): Promise<void> {
   const blob = await reportToImageBlob(report)
   triggerBlobDownload(blob, report.save_name)
 }
 
-/** Renders every report passed in to a PNG and zips them together in one download — the gallery's "Download all" button, once a State/LGA filter narrows what's in view. */
-export async function downloadReportsAsZip(reports: PostReport[], zipName: string): Promise<void> {
+/** Renders every report passed in to a PNG and zips them together in one download — the gallery's "Download all" button, once a filter narrows what's in view. */
+export async function downloadReportsAsZip(reports: ExportableReport[], zipName: string): Promise<void> {
   const zip = new JSZip()
   const usedNames = new Set<string>()
 

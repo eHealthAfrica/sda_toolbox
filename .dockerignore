@@ -1,0 +1,42 @@
+# --- version control / IDE ---
+.git
+.gitignore
+.idea
+
+# --- python artifacts ---
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+wheels/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# --- virtual envs (host-built venvs are never valid inside the image) ---
+.venv/
+venv/
+
+# --- frontend: has its own Docker build context (src/frontend), and its
+# node_modules/dist are enormous — excluding them here keeps the BACKEND
+# image's build context small even though src/frontend is still copied for
+# other reasons (see Dockerfile) ---
+src/frontend/node_modules/
+src/frontend/dist/
+**/node_modules/
+
+# --- app-specific excludes ---
+dev/                 # notebooks + multi-GB sample data, unrelated to the API
+src/toolbox/logs/    # runtime output, not build input
+src/toolbox/data/    # job_tracker sqlite db, runtime output not build input
+Outputs/
+*.ipynb
+
+# --- secrets: never baked into an image layer ---
+.env
+*.env
+
+# --- misc ---
+*.tmp./
+.DS_Store

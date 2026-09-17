@@ -11,7 +11,7 @@ from shapely.geometry import Polygon, box
 
 from toolbox.tools import is_empty
 from toolbox.mlos import AdminColumns
-from toolbox.exceptions import DataError
+from toolbox.exceptions import DataError, InvalidInputError
 from toolbox.spatial_mgr import GeomColumns, convert_to_geodata
 
 
@@ -257,13 +257,18 @@ def create_tesselation_polygon(points: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return polygon
 
 
-def extract_locations(dataset: gpd.GeoDataFrame, subset_col: str = None, subset_names: list[str]=None) -> gpd.GeoDataFrame:
-    dataset_copy = dataset.copy()
-    locations = convert_to_geodata(
-        dataset_copy, GeomColumns(latitude='latitude', longitude='longitude')).to_crs(dataset.crs)
+def extract_locations(dataset: pd.DataFrame, subset_col: str | None, subset_names: list[str] | None) -> gpd.GeoDataFrame:
+    dataset_copy: pd.DataFrame = dataset.copy()
+    locations: gpd.GeoDataFrame = convert_to_geodata(
+        dataset_copy, GeomColumns(latitude='latitude', longitude='longitude')).to_crs(dataset_copy.crs)
+
     locations.drop_duplicates(subset='geometry', inplace=True)
+
     if not subset_col:
         return locations
+
+    if not subset_names:
+        raise InvalidInputError("Missing Parameter", "Provide Names to Subset")
 
     return locations.loc[locations[subset_col].isin(subset_names)]
 

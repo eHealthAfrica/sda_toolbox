@@ -38,6 +38,7 @@ def detect_unique_admin_field(campaign_data: pd.DataFrame) -> str | None:
     logging.info('Checking for Unique Admin Code field')
     string_cols = [col for col in campaign_data.columns if campaign_data[col].dtype.name == 'str']
     plausible_cols = remove_empty_records(campaign_data, string_cols)
+
     if not plausible_cols:
         logging.error(DataError("unique_code missing", 'No Viable columns meet the requirements for unique code'))
         return None

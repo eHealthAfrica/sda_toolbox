@@ -20,7 +20,6 @@ cache and job_tracker would need to move to shared storage; every route in
 this package already assumes a single process.
 """
 
-import io
 import time
 import uuid
 import threading
@@ -28,6 +27,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 import geopandas as gpd
+
+from toolbox.reporting import PostReport
 
 # Unclaimed results are dropped after this long, so a run nobody ever
 # downloads doesn't hold its DataFrames in memory forever.
@@ -41,14 +42,13 @@ _cache: dict[str, 'CachedResult'] = {}
 class CachedResult:
     settlements: pd.DataFrame
     tracks: gpd.GeoDataFrame
-    reports: io.BytesIO | None
+    reports: list[PostReport] | None      # was: io.BytesIO | None
     analysis_day: int
     dip_filename: str
     stored_at: float
 
 
 def _sweep_expired_locked() -> None:
-    """Caller must hold _lock. Drops any entry older than TTL_SECONDS."""
     cutoff = time.time() - TTL_SECONDS
     stale_ids = [job_id for job_id, entry in _cache.items() if entry.stored_at < cutoff]
     for job_id in stale_ids:
@@ -58,11 +58,10 @@ def _sweep_expired_locked() -> None:
 def store_result(
     settlements: pd.DataFrame,
     tracks: gpd.GeoDataFrame,
-    reports: io.BytesIO | None,
+    reports: list[PostReport] | None,     # was: io.BytesIO | None
     analysis_day: int,
     dip_filename: str,
 ) -> str:
-    """Stashes one run's data and returns a fresh job id for it."""
     job_id = uuid.uuid4().hex
     with _lock:
         _sweep_expired_locked()
@@ -77,12 +76,18 @@ def store_result(
     return job_id
 
 
+def peek_result(job_id: str) -> CachedResult | None:
+    """Like pop_result, but does NOT remove the entry — lets the reports
+    endpoint be checked any number of times without invalidating the
+    archive download for the same job_id."""
+    with _lock:
+        _sweep_expired_locked()
+        return _cache.get(job_id)
+
+
 def pop_result(job_id: str) -> CachedResult | None:
-    """Removes and returns the cached result for job_id, or None if it was
-    never stored, already claimed by an earlier archive download, or has
-    expired. One successful archive download consumes the entry — the same
-    "read once" lifecycle the TTL sweep enforces on a slower timescale for
-    results nobody ever downloads."""
+    """Removes and returns the cached result for job_id — used by the
+    archive endpoint, which is still the one thing that consumes a job_id."""
     with _lock:
         _sweep_expired_locked()
         return _cache.pop(job_id, None)
