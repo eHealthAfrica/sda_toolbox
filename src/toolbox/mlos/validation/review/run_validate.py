@@ -49,3 +49,13 @@ async def run_settlements_qc(settlement: pd.DataFrame, admin_code: str, consiste
     qc_ed_mlos.sort_values(by=[admin_code], inplace=True, ignore_index=True)
 
     return qc_ed_mlos
+
+
+if __name__ == '__main__':
+    import asyncio
+    settlement = pd.read_excel(r"C:\Workspace\NEOC\IBRA\August Round\Compiled MLoS.xlsx")
+    asyncio.run(
+        run_settlements_qc(
+            settlement, 'unique_code', False, False
+        )
+    )

@@ -30,7 +30,7 @@ def clip_to_boundary(raw_voronoi: gpd.GeoDataFrame, boundary: gpd.GeoDataFrame):
 
 def identify_non_overlapping_extent(settlement_voronoi: gpd.GeoDataFrame, global_id: str) -> gpd.GeoDataFrame:
     logging.info('Reviewing Settlement Voronoi...')
-    locations = extract_locations(settlement_voronoi)
+    locations = extract_locations(settlement_voronoi, None, None)
 
     intersection = settlement_voronoi.sjoin(locations[['geometry']], how="left", predicate='intersects')
     intersected_voronoi = intersection.loc[intersection['index_right'].notna()]
@@ -42,14 +42,14 @@ def identify_non_overlapping_extent(settlement_voronoi: gpd.GeoDataFrame, global
     if len(pending_pts) > 0:
         logging.info(f'Found {len(pending_pts)} pending points. Adopting Fallback Methodology')
         pending_voronoi = fallback_voronoi(pending_pts)
+        pending_voronoi['type'] = 'DEFAULT'
 
     updated_settlement_voronoi = pd.concat([intersected_voronoi, pending_voronoi], ignore_index=True)
     logging.info(f'Total Settlements with TA: {len(updated_settlement_voronoi):,}')
     return updated_settlement_voronoi
 
 
-def overlay_against_extent(
-        voronoi_data: gpd.GeoDataFrame, extent_data: gpd.GeoDataFrame, global_id: str) -> gpd.GeoDataFrame:
+def overlay_against_extent(voronoi_data: gpd.GeoDataFrame, extent_data: gpd.GeoDataFrame, global_id: str) -> gpd.GeoDataFrame:
 
     logging.info("Overlaying Voronoi against GRID3 Extent...")
 
@@ -74,6 +74,7 @@ def overlay_against_extent(
 
     pending_locations = extract_locations(voronoi_data, global_id, non_intersecting_ids)
     pending_voronoi = fallback_voronoi(pending_locations)
+    pending_voronoi['type'] = 'DEFAULT'
     settlement_voronoi = pd.concat([settlement_voronoi, pending_voronoi], ignore_index=True)
 
     return settlement_voronoi
@@ -84,10 +85,8 @@ def build_state_voronoi(settlements: gpd.GeoDataFrame, grid3_extent: gpd.GeoData
                         state_name: str, unique_column: str, required_columns: list[str]) -> gpd.GeoDataFrame:
 
     logging.info(f'Generating Settlement Voronoi for {state_name}...')
-
     SpatialOps.check_and_match_projection(boundary, settlements)
     settlements = settlements.sjoin(boundary[['geometry', 'statename', 'lganame', 'wardname']], how='left')
-
     settlements.rename(
         columns={col: col.replace("name", "_location") for col in ['statename', 'lganame', 'wardname']},
         inplace=True
@@ -98,8 +97,14 @@ def build_state_voronoi(settlements: gpd.GeoDataFrame, grid3_extent: gpd.GeoData
     state_voronoi = state_voronoi.dissolve(by=unique_column).reset_index(drop=False, names=unique_column)
 
     SpatialOps.check_and_match_projection(grid3_extent, state_voronoi)
-    settlement_voronoi = overlay_against_extent(state_voronoi, grid3_extent, unique_column)
+    if len(state_voronoi) < len(settlements):
+        voronois = state_voronoi[unique_column].tolist()
+        missing_settlements = settlements.loc[~settlements[unique_column].isin(voronois)]
+        missing_voronoi = fallback_voronoi(missing_settlements)
+        missing_voronoi['type'] = 'DEFAULT'
+        state_voronoi = pd.concat([state_voronoi, missing_voronoi], ignore_index=True)
 
+    settlement_voronoi = overlay_against_extent(state_voronoi, grid3_extent, unique_column)
     keep_cols = required_columns + ["geometry"]
     settlement_voronoi = settlement_voronoi[[c for c in keep_cols if c in settlement_voronoi.columns]]
 

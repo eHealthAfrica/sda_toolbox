@@ -1,3 +1,4 @@
+import logging
 import multiprocessing
 import concurrent.futures
 from functools import partial
@@ -130,7 +131,7 @@ def find_and_match_settlement(focal_datasets: list[ReviewDataSet]):
 
 def filter_dataset(dataset: pd.DataFrame | gpd.GeoDataFrame, admin: AdminColumns, ward_code: str):
     state, lga, ward = ward_code.split("_")
-
+    logging.info(f'Filtering Datasets to {state} State {lga} LGA and {ward}')
     dataset['ward_score'] = rapidfuzz.process.cdist(dataset[admin.ward], [ward], scorer=rapidfuzz.fuzz.partial_ratio) # noqa
     dataset['lga_score'] = rapidfuzz.process.cdist(dataset[admin.lga], [lga], scorer=rapidfuzz.fuzz.partial_ratio) # noqa
 
@@ -146,6 +147,7 @@ def filter_dataset(dataset: pd.DataFrame | gpd.GeoDataFrame, admin: AdminColumns
 
 def process_focal_datasets(review_datasets: list[ReviewDataSet],  focal_ward_id: str)-> dict:
     focal_datasets = []
+    logging.info(f'Cross-Referencing Settlements within {focal_ward_id.split("_")} Administrative Locations')
     for review_dataset in review_datasets:
         dataset_copy = review_dataset.data.copy()
         focal_dataset = filter_dataset(dataset_copy, review_dataset.admin_columns, focal_ward_id)
@@ -170,12 +172,14 @@ def process_ward_level_data(boundary_record: tuple[str, MultiPolygon], datasets:
 
 
 def convert_dict_to_df(data: dict, out_col: str)->pd.DataFrame:
+    logging.info(f'Converting Identified {out_col} Data to DataFrame')
     df = pd.DataFrame.from_dict(data, orient='index').reset_index(drop=False, names='unique_code').rename(columns={0:out_col})
     return df
 
 
 def prepare_result(results: list[dict], sources: list[str]) -> pd.DataFrame:
 
+    logging.info('Cleaning Up Results, Converting and Merging to Table')
     print('Cleaning Up Results, Converting and Merging to Table')
     compiled_df = pd.DataFrame()
     for source in sources:
@@ -211,6 +215,7 @@ def subset_datasets(places_data: pd.DataFrame, admin: AdminColumns, subset_locat
 
 
 def retrieve_ward_geometries(states: list[str], places: list[str]) -> tuple[list[tuple[str, MultiPolygon]],ReviewDataSet]:
+    logging.info('Retrieving Ward Boundary Data and Converting to Ward Geometries')
     boundary_data: gpd.GeoDataFrame = ReadDBData(CONFIG['DATASETS']['ward_boundary'], True).read_data({'statename': states})
     admin_info = boundary_data.loc[:, ['statename', 'lganame', 'wardname', 'geometry']].to_records(index=False)
     ward_geometry_map: list[tuple[str, MultiPolygon]] = [(f"{state}_{lga}_{ward}",geometry) for state, lga, ward, geometry in admin_info]
@@ -220,6 +225,7 @@ def retrieve_ward_geometries(states: list[str], places: list[str]) -> tuple[list
 
 
 def enrich_dataset(target_data: gpd.GeoDataFrame, source_data: gpd.GeoDataFrame, places: list[str]):
+    logging.info('Enriching OSM Data with Administrative information')
     enriched_data = target_data.sjoin(source_data[['wardname', 'lganame', 'statename', 'geometry']], how='left', predicate='intersects', lsuffix="_source")
     added_cols = [col for col in enriched_data.columns if col.__contains__('_source')] + ['index_right']
     enriched_data.drop(added_cols, axis=1, inplace=True)
@@ -230,6 +236,7 @@ def enrich_dataset(target_data: gpd.GeoDataFrame, source_data: gpd.GeoDataFrame,
 
 
 def retrieve_osm_data(boundary_data: gpd.GeoDataFrame, places: list[str]) -> ReviewDataSet:
+    logging.info('Retrieving OSM Data')
     osm_admin = AdminColumns('statename', 'lganame', 'wardname', 'name')
     try:
         osm_place = ReadDBData(CONFIG['DATASETS']['osm'], True).read_data()
@@ -241,13 +248,14 @@ def retrieve_osm_data(boundary_data: gpd.GeoDataFrame, places: list[str]) -> Rev
         osm_geom = GeomColumns('latitude', 'longitude')
         return ReviewDataSet(name="osm", data=enriched_osm, admin_columns=osm_admin, settlement_col='name', geo_col=osm_geom)
     except Exception:
+        logging.warning('OSM Data Retrieval Failed. Using Empty Fallback Dataset for OSM')
         data = gpd.GeoDataFrame(columns=['statename', 'lganame', 'wardname', 'name'])
         return ReviewDataSet(
             name='osm', data=data, admin_columns=osm_admin, settlement_col='name', geo_col=GeomColumns('latitude', 'longitude'))
 
 
 def run_settlement_similarity_check(admin_map: list[tuple[str, MultiPolygon]], datasets: list[ReviewDataSet]) -> pd.DataFrame:
-
+    logging.info('Running Settlement Similarity Check')
     ward_level_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = [
@@ -258,11 +266,13 @@ def run_settlement_similarity_check(admin_map: list[tuple[str, MultiPolygon]], d
             result = future.result()
             ward_level_results.append(result)
 
+    logging.info('Similarity Check Completed')
     compiled_df: pd.DataFrame  = prepare_result(ward_level_results, [ds.name for ds in datasets if ds.name!='mlos'])
     return compiled_df
 
 
 def merge_and_cleanup(settlement_data: gpd.GeoDataFrame, datasets: list[ReviewDataSet]) -> gpd.GeoDataFrame:
+    logging.info('Extracting and Merging Settlement Data to Original Settlement Data')
     for dataset in datasets:
         if dataset.name == 'mlos':
             continue
@@ -336,6 +346,7 @@ def evaluate_settlements(settlement: gpd.GeoDataFrame, code_col: str, ind_datase
     merged_tracks: BaseGeometry = tracks_data.geometry.union_all()
 
     print('Starting Evaluation...')
+    logging.info('Starting Evaluation for Intersection with Grid3 and proximity to Tracks...')
     for ind_dataset in tqdm(ind_datasets, desc='Evaluating and Expanding Results', unit='datasets'):
         settlement[f"{ind_dataset}_response"] = settlement.apply(evaluator, args=(code_col, ind_dataset,), axis=1)
         settlement[f'{ind_dataset}_similarity'] = settlement[f'{ind_dataset}_response'].apply(
@@ -386,6 +397,8 @@ def order_cols(original_cols: list[str], review_sources: list[str]) -> list[str]
 
 
 def extract_places(settlement_data: pd.DataFrame) -> list[str]:
+
+    logging.info('Extracting Unique Ward Location from Settlement Data...')
     settlement_data_copy = settlement_data.copy()
     admin = AdminColumns.create_by_search(settlement_data_copy)
     settlement_data_copy['unique_ward'] = settlement_data_copy.apply(
@@ -400,8 +413,9 @@ def extract_places(settlement_data: pd.DataFrame) -> list[str]:
 def create_review_datasets(
         source_datasets: dict[str, pd.DataFrame], states: list[str],
         places: list[str], use_osm: bool) -> tuple[list[ReviewDataSet], Any]:
-    datasets = []
 
+    logging.info(f'Creating Review Datasets from {len(source_datasets)} datasets and {len(states)} states...')
+    datasets = []
 
     for data_name, data in source_datasets.items():
         admin_cols = AdminColumns.create_by_search(data)
@@ -420,6 +434,7 @@ def create_review_datasets(
 
     geom_map, osm_dataset = retrieve_ward_geometries(states, places)
     if use_osm:
+        logging.info('OSM Data Included')
         datasets.append(osm_dataset)
 
     return datasets, geom_map
@@ -455,6 +470,7 @@ async def review_settlement_coordinates(
     updated_settlements = settlements.merge(
         compiled, left_on=settlement_ds.unique_code, right_on=settlement_ds.unique_code, how='left')
 
+    logging.info('Conducting Spatial Evaluation')
     reviewed_settlements = investigate_similarity_response(
         updated_settlements, datasets, states, settlement_ds.unique_code, tracks, sources)
 

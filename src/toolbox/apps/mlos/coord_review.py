@@ -1,3 +1,4 @@
+import logging
 import tempfile
 
 import pandas as pd
@@ -10,6 +11,7 @@ from toolbox.access.read_mgr import read_dataset
 from toolbox.mlos.validation.review.spatial.coordinate_reviewer import review_settlement_coordinates
 
 router = APIRouter()
+logger = logging.getLogger('Coordinate Review')
 
 
 @router.post("/coordinate_review", tags=["MLoS"])

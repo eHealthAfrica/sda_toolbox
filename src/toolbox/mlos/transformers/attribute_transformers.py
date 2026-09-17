@@ -43,6 +43,7 @@ def transform_preset_attributes(mlos_data: pd.DataFrame, preset_attributes: Pres
     preset_map: dict[str, list[str]] = preset_attributes.preset_attribute_map()
 
     delimiter_map = {rf"\s*(?:{'|'.join(OTHER_DELIMITERS)})\s*": '_'}
+    mlos_data[preset_attributes.day_of_activity] = mlos_data[preset_attributes.day_of_activity].astype(str)
     mlos_data[preset_attributes.day_of_activity] = mlos_data[preset_attributes.day_of_activity].str.lower()
     mlos_data[preset_attributes.day_of_activity] = mlos_data[preset_attributes.day_of_activity].replace(
         delimiter_map, regex=True

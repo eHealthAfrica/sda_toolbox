@@ -25,8 +25,73 @@ volumes:
   # to `./logs:...` / `./data:...` bind mounts for host visibility.
   job-tracker-logs:
   job-tracker-data:
+  # NEW — persists the containerized Postgres/PostGIS data directory across
+  # `docker compose down`/recreation. Without this, every boundary/settlement
+  # table would be lost the moment the `db` container is removed.
+  postgres-data:
 
 services:
+  # NEW — containerizes the Postgres/PostGIS server that toolbox/utils/
+  # credential.py and toolbox/models/db/models.py talk to (state/LGA/ward
+  # boundaries, building footprints, settlements, etc.). Uses the postgis/
+  # postgis image (not plain postgres) because models.py declares
+  # geoalchemy2 `Geometry` columns — those need the PostGIS extension, which
+  # this image's own init scripts enable automatically on first boot.
+  #
+  # ${USER}/${PASSWORD}/${DB} below are the SAME variables the `app`
+  # service's env_file already reads (see toolbox/utils/credential.py) —
+  # Compose auto-loads the root .env file for variable substitution inside
+  # this file too, so there's exactly one place these values live, not two.
+  # NOTE (carried over from .env.example's own warning): USER is a name some
+  # shells/orchestrators pre-set themselves. If this doesn't come through as
+  # expected, run `docker compose config` to see what Compose actually
+  # resolved these to before it starts containers.
+  db:
+    # 18-3.6 to match your native install's server version (18.3) — pg_dump
+    # can only dump from a server that's the same or older than itself, so
+    # this needs to track whatever major version your real Postgres is
+    # running, not an arbitrary "current" tag.
+    image: postgis/postgis:18-3.6
+    container_name: sda-toolbox-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${USER}
+      POSTGRES_PASSWORD: ${PASSWORD}
+      POSTGRES_DB: ${DB}
+    ports:
+      # Optional — only needed to reach this DB directly from a host GUI
+      # tool (DBeaver, pgAdmin, psql on the host). Remove this if the DB
+      # should only ever be reached from other containers on
+      # sda-toolbox-net.
+      #
+      # CONFLICT WARNING: your existing native Windows Postgres install is
+      # also bound to host port 5432. `docker compose up -d db` will fail
+      # with "port is already allocated" while that service is running.
+      # Either stop the native Postgres service before starting this
+      # container (services.msc, or `Stop-Service postgresql-x64-<ver>` in
+      # an admin PowerShell — check the exact service name first), or map
+      # this container to a different host port during migration, e.g.
+      # "5433:5432", so both can run side by side (see the pg_dump/restore
+      # steps for exactly how that's used).
+      - "5432:5432"
+    volumes:
+      # NOTE: Postgres 18's official images changed their default data
+      # directory layout — PGDATA now lives at /var/lib/postgresql/<major>/
+      # docker internally, and the image's own VOLUME declaration points at
+      # the /var/lib/postgresql parent directory instead of the old
+      # /var/lib/postgresql/data. Mounting at .../data (the pre-18
+      # convention) would silently create an empty, unused directory here
+      # instead of actually persisting anything.
+      - postgres-data:/var/lib/postgresql
+    networks:
+      - sda-toolbox-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${USER} -d ${DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   app:
     build:
       context: .
@@ -53,6 +118,13 @@ services:
       - job-tracker-data:/app/src/toolbox/data
     networks:
       - sda-toolbox-net
+    depends_on:
+      # NEW — waits for the containerized Postgres to report ready (not just
+      # "started") before the app boots, since credential.py opens a DB
+      # connection and previously had no in-Docker dependency to wait on at
+      # all (HOST used to point outside Docker, at the host machine).
+      db:
+        condition: service_healthy
     healthcheck:
       # /docs is FastAPI's auto-generated Swagger UI — always present, no DB
       # access required, so this reflects "the app booted" rather than

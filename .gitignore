@@ -5,7 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
-./.idea/
+.idea/
 
 # Virtual environments
 .venv
@@ -20,6 +20,7 @@ htmlcov/
 .coverage
 *.ipynb
 design/
+Claude outputs/
 
 BACKEND_CHANGES_NEEDED.md
 DOCKERIZATION_PLAN.md
