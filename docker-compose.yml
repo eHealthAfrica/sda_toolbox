@@ -33,8 +33,11 @@ services:
       dockerfile: Dockerfile
     image: sda-toolbox-api:local
     container_name: sda-toolbox-api
+    # Optional: the app boots without it (the healthcheck below checks exactly
+    # that), and database features stay inert until credentials are supplied.
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "8000:8000"
     volumes:

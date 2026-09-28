@@ -29,11 +29,15 @@ The application has a frontend component with dashboard capability of rendered r
     git clone <repository-url>
 ```
 
-2. On your IDE terminal navigate to the local folder where you have installed the repo and set the .env file and provide the correct database credentials
+2. Navigate to the repo and create the environment file
 ```bash
-    cd path\to\local\repo
-    cp .env.example .env
+    cd path/to/local/repo
+    ./scripts/secrets.sh
  ```
+
+The values in `.env` are credentials for an existing database, so they cannot be
+generated — the script creates the file and lists what is still to fill in. The stack
+starts without them; database features stay inert until they are set.
 
 3. Set up your virtual environment
 ```bash
