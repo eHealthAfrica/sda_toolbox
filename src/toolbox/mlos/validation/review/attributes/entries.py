@@ -4,16 +4,16 @@ from typing import Any, Optional
 
 import pandas as pd
 
-from toolbox.tools import issues_counter
+from toolbox.tools import issues_counter, is_uuid4, value_is_uuid4
 from toolbox.exceptions import MissingConfiguration
 from toolbox.mlos import MLoSAttributes, Accessibility, PresetAttributes
 from toolbox.mlos.validation.review.attributes.numeric import validate_numeric_columns
 
 
-def validate_global_id(data: pd.DataFrame, global_id: str):
+def validate_global_id(data: pd.DataFrame, global_id: str | None):
     logging.info('Checking Global ID column for empty and duplicate values')
     if global_id is None:
-        data[f'WE_{global_id}'] = 'Global ID column not found'
+        data[f'WE_global_id'] = 'Global ID column not found'
         issues_counter(data, f'WE_{global_id}', 'EHA GUID', suffix=True)
         return data
 
@@ -23,6 +23,10 @@ def validate_global_id(data: pd.DataFrame, global_id: str):
         (data.duplicated(subset=global_id, keep=False))
         & (data[f'WE_{global_id}'].isna()), [f'WE_{global_id}']
     ] = 'Duplicate UUID'
+
+    # data[f'WE_{global_id}'] = data[global_id].apply(is_uuid4, axis=1)
+    data[f'WE_{global_id}'] = data[f'{global_id}'].apply(
+        lambda row: "Invalid UUID" if not value_is_uuid4(row) else None)
 
     issues_counter(data, f'WE_{global_id}', 'EHA GUID', suffix=True)
     return data
@@ -42,15 +46,18 @@ def review_reason_for_inaccessibility(row: pd.Series, attributes: PresetAttribut
     reason_for_inaccessibility = row[attributes.reasons_for_inaccessibility]
     if pd.notna(reason_for_inaccessibility):
         return None
+    try:
+        accessibility: str | None = row[attributes.accessibility_status]
+        if pd.isna(accessibility):
+            return None
 
-    accessibility: str | None = row[attributes.accessibility_status]
-    if pd.isna(accessibility):
+        if Accessibility(accessibility.title()) != Accessibility.FULLY_ACCESSIBLE:
+            return "Missing Reason for Inaccessibility Entry"
+
         return None
-
-    if Accessibility(accessibility.title()) != Accessibility.FULLY_ACCESSIBLE:
-        return "Missing Reason for Inaccessibility Entry"
-
-    return None
+    except ValueError as e:
+        logging.info(f'Invalid Entry: {e}')
+        return 'Invalid Entry'
 
 
 def validate_preset_columns(data: pd.DataFrame, cols: list[str] | dict, options: Optional[list] = None) -> pd.DataFrame:

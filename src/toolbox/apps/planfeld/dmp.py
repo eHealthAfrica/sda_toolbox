@@ -1,7 +1,6 @@
 import io
 import re
 import zipfile
-import tempfile
 from typing import Literal
 
 import pandas as pd
@@ -11,6 +10,8 @@ from fastapi.responses import FileResponse
 
 from toolbox.utils import timer, logger
 from toolbox.mlos.planfeld import populate_daily_implementation_plan
+from toolbox.utils.offload import run_heavy
+from toolbox.utils.tempfiles import afile_response
 
 router = APIRouter()
 logger(log_name='DMP Aggregator')
@@ -52,21 +53,15 @@ async def combine_dmp_files(dmp_files: UploadFile, dip: Literal['expand', 'keep'
         FileResponse: Downloadable Excel file containing combined DMP data.
     """
 
-    datasets = extract_and_retrieve_datasets(dmp_files)
+    datasets = await run_heavy(extract_and_retrieve_datasets, dmp_files)
     # Todo: Add a function that splits the outcome into settlements and special places {dict, [df, df]}
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-    
-    with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
-        for sheet_name, df in tqdm(datasets.items(), desc='Writing to Excel'):
-            if dip == 'expand':
-                df = populate_daily_implementation_plan(df)
+    def write_workbook(path: str) -> None:
+        with pd.ExcelWriter(path, engine='openpyxl') as writer:
+            for sheet_name, df in tqdm(datasets.items(), desc='Writing to Excel'):
+                if dip == 'expand':
+                    df = populate_daily_implementation_plan(df)
+                df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
 
-            df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
-
-    temp_file.close()
-
-    return FileResponse(
-        path=temp_file.name,
-        filename="combined_dmp.xlsx",
-        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
+    return await afile_response(
+        write_workbook, '.xlsx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'combined_dmp.xlsx')

@@ -73,7 +73,7 @@ services:
       # this container to a different host port during migration, e.g.
       # "5433:5432", so both can run side by side (see the pg_dump/restore
       # steps for exactly how that's used).
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       # NOTE: Postgres 18's official images changed their default data
       # directory layout — PGDATA now lives at /var/lib/postgresql/<major>/
@@ -126,15 +126,41 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      # /docs is FastAPI's auto-generated Swagger UI — always present, no DB
-      # access required, so this reflects "the app booted" rather than
-      # "the database happens to be reachable right now".
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/docs', timeout=3).status==200 else 1)"]
+      # /health is the liveness probe (toolbox/job_tracker/router.py): it answers
+      # from the event loop and touches no database, so it says "the process is
+      # alive and able to run Python" and nothing else. It replaces /docs, which
+      # only proved the Swagger page rendered. Use /ready for "can it do useful
+      # work right now" (that one checks the database) - not here, or a database
+      # blip would mark the app unhealthy.
+      #
+      # NOTE: Docker only LABELS a container unhealthy; it does not restart it.
+      # Recovery from a hang or runaway job comes from the memory limit below
+      # (out-of-memory kill -> exit -> `restart: unless-stopped` brings it back).
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=4).status==200 else 1)"]
       interval: 30s
-      timeout: 5s
+      timeout: 6s
       retries: 3
-      start_period: 15s
+      start_period: 30s
     restart: unless-stopped
+    # Hard memory ceiling for the API. The analysis tools load whole uploads into
+    # pandas (a 512 MB upload can need several GB), so without a ceiling one runaway
+    # job can take all of the Docker VM's memory and freeze every container, the
+    # database included. With it, the kernel kills only this container, and
+    # `restart: unless-stopped` starts it again; the job tracker marks whatever was
+    # running as `interrupted`. Set APP_MEM_LIMIT in .env to suit the machine
+    # (e.g. 8g); it must fit inside the memory Docker Desktop is given
+    # (Settings > Resources). memswap_limit equal to mem_limit stops the container
+    # from thrashing into swap before it is killed.
+    mem_limit: ${APP_MEM_LIMIT:-6g}
+    memswap_limit: ${APP_MEM_LIMIT:-6g}
+    # Keep Docker's own copy of the container's console output from growing
+    # without bound (progress bars and warnings add up over weeks). The app's
+    # real log files live in the job-tracker-logs volume.
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     # toolbox.CPU_COUNT = multiprocessing.cpu_count() - 2, computed once at
     # import time (toolbox/__init__.py) and used as a ThreadPoolExecutor
     # max_workers value in batch file reads. Uncomment/adjust once you know
@@ -162,6 +188,7 @@ services:
         # FRONTEND_API_BASE_URL in the root .env to the real public API URL
         # for any other deployment (e.g. the shared cloud instance).
         VITE_API_BASE_URL: ${FRONTEND_API_BASE_URL:-http://localhost:8000}
+        VITE_JOB_LOGS: ${FRONTEND_JOB_LOGS:-false}
     image: sda-toolbox-frontend:local
     container_name: sda-toolbox-frontend
     ports:

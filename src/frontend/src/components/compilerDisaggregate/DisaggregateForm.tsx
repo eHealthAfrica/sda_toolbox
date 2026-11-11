@@ -53,7 +53,7 @@ export default function DisaggregateForm({ onSubmit, submitting }: DisaggregateF
     >
       <h2 style={{ fontSize: 13, margin: '0 0 3px' }}>Run settings</h2>
       <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginBottom: 12 }}>
-        Upload the Master List of Settlements and choose the administrative level to split by.
+        Upload the Master List of Settlements and choose the administrative level (State, LGA or Ward) to split by.
       </div>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <FileDropzone label="MLoS file (.csv / .xlsx)" accept=".csv,.xlsx,.xls" file={mlosFile} onChange={setMlosFile} fillWidth />

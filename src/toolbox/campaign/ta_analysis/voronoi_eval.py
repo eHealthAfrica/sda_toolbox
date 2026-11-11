@@ -16,7 +16,7 @@ def count_tracks_within_settlement_extent(
     extent_tracks = tracks.sjoin(settlement_extent, how='left', predicate='intersects', rsuffix='tracks')
     count = extent_tracks.groupby(by=unique_col).size()
     settlement_extent['track_count'] = settlement_extent[unique_col].map(count).fillna(0).astype(int)
-    settlement_extent =  settlement_extent[[unique_col, 'eha_guid', 'track_count', 'geometry']].to_crs(32632)
+    settlement_extent =  settlement_extent[[unique_col, 'track_count', 'geometry']].to_crs(32632)
 
     settlement_extent['area_sqm'] = settlement_extent.area
     return settlement_extent.drop(columns='geometry')
@@ -25,7 +25,7 @@ def count_tracks_within_settlement_extent(
 def settlement_voronoi_visitation(tracks: gpd.GeoDataFrame, states: list[str]) -> tuple[pd.DataFrame, str]:
     datasets: dict = CONFIG['DATASETS']
     ta_data = ReadDBData(datasets['settlement_extent'], True).read_data({'state_name': states})
-    ta_col: str | None = detect_unique_admin_field(ta_data)
+    ta_col: str | None = 'eha_guid'#detect_unique_admin_field(ta_data)
     if not ta_col:
         ta_col: str = 'uniquecode'
         ta_data = construct_new_unique(ta_data, ta_col)

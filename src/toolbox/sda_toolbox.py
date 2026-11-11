@@ -9,7 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from toolbox import SUMMARY, DESC
 from toolbox.job_tracker import JobLoggingMiddleware
+from toolbox.job_tracker.alerts import lifespan
 from toolbox.exceptions import ToolBoxExceptions
+from toolbox.utils.upload_limit import UploadSizeLimitMiddleware
+from toolbox.errors import DataContractError, data_contract_error_handler, category_headers
 from toolbox.apps import (
     dip,
     dmp,
@@ -28,6 +31,7 @@ from toolbox.apps import (
     coord_review,
     reach_analysis,
     h2h_validation,
+    tracks_analysis,
     contact_analysis,
     update_validation,
     duplicate_checker,
@@ -38,7 +42,9 @@ from toolbox.apps import (
 )
 
 
-app = FastAPI(title='SDA Toolbox', summary=SUMMARY, description=DESC, version='0.4')
+# `lifespan` starts the notifier's background checker with the app and stops it
+# on shutdown (toolbox/job_tracker/alerts.py).
+app = FastAPI(title='SDA Toolbox', summary=SUMMARY, description=DESC, version='0.4', lifespan=lifespan)
 
 # CORS: added alongside src/frontend (a separate-origin Vite dev server that
 # calls this API directly from the browser). Without this, every request
@@ -61,6 +67,13 @@ _cors_origins = [
 ]
 
 
+# Upload size check (toolbox/utils/upload_limit.py). It is OFF unless UPLOAD_LIMIT_ENABLED=1; when on, an
+# upload over MAX_UPLOAD_MB (default 200) gets a readable HTTP 413 before the route reads it.
+# Added FIRST so it is the innermost layer: the 413 then
+# still passes through CORSMiddleware (the browser can read it) and JobLoggingMiddleware (it is
+# recorded as a user_input failure, not a crash).
+app.add_middleware(UploadSizeLimitMiddleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -76,7 +89,11 @@ app.add_middleware(
     # `response.headers.get('X-Job-Id')` in the frontend's submitH2HTracking
     # (src/api/client.ts) would silently always return null, even though the
     # header is genuinely present on the wire.
-    expose_headers=['X-Job-Id'],
+    # X-Data-Warning: a tool sets it when it finished but the data looked wrong
+    # (toolbox/dataops); the frontend shows it next to the download.
+    # X-Checkout-Summary: the counts the Checkout page shows (toolbox/apps/planfeld/checkout.py).
+    # X-TA-Summary: the states a Target Area run did and did not cover (toolbox/target_area/run_summary.py).
+    expose_headers=['X-Job-Id', 'X-Data-Warning', 'X-Checkout-Summary', 'X-TA-Summary'],
 )
 
 # Automatically records a row (id, tool, status, timing) into a small
@@ -109,6 +126,7 @@ app.include_router(uuid_checker.router)
 # app.include_router(hitnrun_validation.router)
 app.include_router(h2h_validation.router)
 app.include_router(reach_analysis.router)
+app.include_router(tracks_analysis.router)
 
 # Compiler Endpoints
 app.include_router(tracks.router)
@@ -127,9 +145,10 @@ app.include_router(campaign_day_reporting.router)
 app.include_router(timespent.router)
 
 # Campaign Endpoints
-app.include_router(contact_analysis.router)
 app.include_router(submission_reviewer.router)
+app.include_router(contact_analysis.router)
 app.include_router(target_area.router)
+app.include_router(checkout.router)
 
 # Job Tracking (Dashboard job-history API — see JobLoggingMiddleware above)
 app.include_router(jobs.router)
@@ -157,8 +176,17 @@ async def api_exception_handler(_, exc: ToolBoxExceptions):
             'detail': exc.details,
             'status_code': exc.status_code
         },
-        headers={'error': exc.msg}
+        # category_headers() tags the "your data was wrong" exceptions so the job
+        # tracker does not count them as crashes (toolbox/errors.py).
+        headers={'error': exc.msg, **category_headers(exc)}
     )
+
+
+# A tool raises DataContractError when the user's data is the problem (see
+# toolbox/errors.py). The handler answers 422 with a structured body and an
+# X-Error-Category header, which the job tracker files as `data_contract` —
+# reported on the Reliability page but not counted against the success rate.
+app.add_exception_handler(DataContractError, data_contract_error_handler)
 
 
 # if __name__ == '__main__':

@@ -35,6 +35,8 @@ COPY . .
 # the equivalent variable for local (non-Docker) `npm run dev` use.
 ARG VITE_API_BASE_URL=http://localhost:8000
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+ARG VITE_JOB_LOGS=false
+ENV VITE_JOB_LOGS=${VITE_JOB_LOGS}
 
 RUN npm run build
 

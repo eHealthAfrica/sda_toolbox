@@ -4,15 +4,17 @@ from typing import Optional
 import pandas as pd
 from tqdm import tqdm
 from fastapi import UploadFile, APIRouter
-from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 
 from toolbox.exceptions import NotSupportedError
 from toolbox.models import State, Extensions, Policy
 from toolbox.access.read.spatial_handler import ESRIHandler
 from toolbox.mlos.transformers.common import common_transformations
 from toolbox.mlos.validation.update import standardize_admin_records
-from toolbox.tools import extract_and_find_file, generate_output_name
+from toolbox.tools import extract_and_find_file
 from toolbox.access.read_mgr import read_dataset, get_excel_sheet_names
+from toolbox.utils.offload import run_heavy
+from toolbox.utils.tempfiles import afile_response
 
 router = APIRouter()
 
@@ -41,12 +43,12 @@ async def combine_lga_data(lga_file: UploadFile, file_extension: Optional[Extens
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_files = await ESRIHandler.save_uploaded_file(lga_file, temp_dir)
         if upload_extension == 'zip':
-            data_files = extract_and_find_file(temp_files, temp_dir, file_extension.value)
+            data_files = await run_in_threadpool(extract_and_find_file, temp_files, temp_dir, file_extension.value)
         else:
             data_files = temp_files
 
 
-        excel_map = get_excel_sheet_names(data_files)
+        excel_map = await run_in_threadpool(get_excel_sheet_names, data_files)
 
         for file, sheet_names in tqdm(excel_map.items(), desc='Reading Workbooks'):
             excel_datasets = [
@@ -55,18 +57,15 @@ async def combine_lga_data(lga_file: UploadFile, file_extension: Optional[Extens
             ]
             all_datasets.extend(excel_datasets)
 
-    all_datasets = [common_transformations(dataset) for dataset in all_datasets]
-    validated_dataset = pd.concat(all_datasets, ignore_index=True)
-    validated_dataset = standardize_admin_records(validated_dataset, Policy.MP)
+    def combine() -> pd.DataFrame:
+        transformed = [common_transformations(dataset) for dataset in all_datasets]
+        combined = pd.concat(transformed, ignore_index=True)
+        return standardize_admin_records(combined, Policy.MP)
 
-    temp_file = tempfile.NamedTemporaryFile(suffix='.csv', delete=False)
-    validated_dataset.to_csv(temp_file.name, index=False)
+    # Transforming and combining every LGA workbook is minutes of pandas work: keep it off the event loop.
+    validated_dataset = await run_heavy(combine)
 
-    save_name = generate_output_name(lga_file.filename, 'csv', 'compiled')
-    return FileResponse(
-        save_name,
-        filename='collated_lga_data.csv',
-        media_type='text/csv'
-    )
+    return await afile_response(
+        lambda path: validated_dataset.to_csv(path, index=False), '.csv', 'text/csv', 'collated_lga_data.csv')
 
 

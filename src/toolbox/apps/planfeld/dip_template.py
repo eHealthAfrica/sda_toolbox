@@ -3,8 +3,9 @@ import tempfile
 import zipfile
 import os
 
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, UploadFile, File, Form
+from starlette.concurrency import run_in_threadpool
 from tqdm import tqdm
 import pandas as pd
 
@@ -14,6 +15,8 @@ from toolbox.access.export_mgr import add_to_archive
 from toolbox.access.read_mgr import read_dataset
 from toolbox.exceptions import InvalidInputError
 from toolbox.models import State
+from toolbox.utils.offload import run_heavy
+from toolbox.utils.tempfiles import afile_response, new_result_file, remove_file
 
 router = APIRouter()
 
@@ -50,18 +53,24 @@ async def merge_dip_and_maps(
         os.makedirs(map_book_path, exist_ok=True)
 
         dip_zip_path = await save_uploaded_file(dip_path, temp_dir)
-        extract_and_find_file(dip_zip_path, dip_save_path, '.pdf')
+        await run_in_threadpool(extract_and_find_file, dip_zip_path, dip_save_path, '.pdf')
+
         maps_zip_path = await save_uploaded_file(maps_path, temp_dir)
-        extract_and_find_file(maps_zip_path, maps_save_path, '.csv')
+        await run_in_threadpool(extract_and_find_file, maps_zip_path, maps_save_path, '.csv')
 
-        output_pdfs: list = merge_maps_to_dips(dip_save_path, maps_save_path, map_book_path, lgas=lgas, state=state)
+        def merge_and_zip() -> BytesIO:
+            output_pdfs: list = merge_maps_to_dips(dip_save_path, maps_save_path, map_book_path, lgas=lgas, state=state)
 
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', allowZip64=True) as zip_file:
-            for map_book in tqdm(output_pdfs, desc='Adding To Zip Archive'):
-                zip_file.write(map_book, arcname=os.path.join("LGA Map Book.zip", os.path.basename(map_book)))
+            archive = BytesIO()
+            with zipfile.ZipFile(archive, 'w', allowZip64=True) as zip_file:
+                for map_book in tqdm(output_pdfs, desc='Adding To Zip Archive'):
+                    zip_file.write(map_book, arcname=os.path.join("LGA Map Book.zip", os.path.basename(map_book)))
 
-        zip_buffer.seek(0)
+            archive.seek(0)
+            return archive
+
+        # Merging the PDFs is the slow part; the temporary folder stays until the zip is built.
+        zip_buffer = await run_heavy(merge_and_zip)
         return StreamingResponse(
             zip_buffer,
             media_type="application/x-zip-compressed",
@@ -93,21 +102,18 @@ async def validate_microplan(settlements_file: UploadFile = File(...), team_allo
 
     dip_df = await read_dataset(settlements_file)
     team_distribution_df = await read_dataset(team_allocation_file) if team_allocation_file else None
-    validation_datasets: dict[str, pd.DataFrame] = validate_daily_implementation_plan(dip_df, team_distribution_df)
+    validation_datasets: dict[str, pd.DataFrame] = await run_heavy(validate_daily_implementation_plan, dip_df, team_distribution_df)
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-    with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
-        for title, df in tqdm(validation_datasets.items(), desc='Writing to Excel'):
-            sheet_name = title.replace('_', ' ').title()
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    def write_workbook(path: str) -> None:
+        with pd.ExcelWriter(path, engine='openpyxl') as writer:
+            for title, df in tqdm(validation_datasets.items(), desc='Writing to Excel'):
+                sheet_name = title.replace('_', ' ').title()
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-    temp_file.close()
-
-    return FileResponse(
-        temp_file.name,
-        filename=f"{settlements_file.filename} Validation.xlsx",
-        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
+    return await afile_response(
+        write_workbook, '.xlsx',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        f"{settlements_file.filename} Validation.xlsx")
 
 
 @router.post("/dip/generator", tags=["Microplan"])
@@ -136,25 +142,34 @@ async def generate_daily_implementation_plan(
 
     team_allocation_data = await read_dataset(team_allocation_file) if team_allocation_file else None
 
-    results, dip_pdfs = generate_team_dips(dip_data, validate_dip, team_allocation_data)
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w") as zip_file:
-        for dip_pdf in tqdm(dip_pdfs, "Adding To ZIP Archive"):
-            zip_file.write(dip_pdf, arcname=os.path.join("DIPS.zip", os.path.basename(dip_pdf)))
+    def build_zip() -> BytesIO:
+        results, dip_pdfs = generate_team_dips(dip_data, validate_dip, team_allocation_data)
 
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+        archive = BytesIO()
+        with zipfile.ZipFile(archive, "w") as zip_file:
+            for dip_pdf in tqdm(dip_pdfs, "Adding To ZIP Archive"):
+                zip_file.write(dip_pdf, arcname=os.path.join("DIPS.zip", os.path.basename(dip_pdf)))
 
-        with pd.ExcelWriter(temp_file, engine='openpyxl') as writer:
-            for title, df in tqdm(results.items(), desc='Writing to Excel'):
-                sheet_name = title.replace('_', ' ').title()
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
+            # The workbook only needs to exist long enough to be copied into the zip.
+            workbook_path = new_result_file('.xlsx')
+            try:
+                with pd.ExcelWriter(workbook_path, engine='openpyxl') as writer:
+                    for title, df in tqdm(results.items(), desc='Writing to Excel'):
+                        sheet_name = title.replace('_', ' ').title()
+                        df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-        temp_file.close()
-        out_name = generate_output_name(dip_file.filename, ext='xlsx', suffix='DIP')
-        zip_file.write(temp_file.name, arcname=os.path.join("DIPS.zip", out_name))
-        # add_to_archive(zip_file, std_dip_data, "DIP.csv")
+                out_name = generate_output_name(dip_file.filename, ext='xlsx', suffix='DIP')
+                zip_file.write(workbook_path, arcname=os.path.join("DIPS.zip", out_name))
+            finally:
+                remove_file(workbook_path)
 
-    zip_buffer.seek(0)
+            # add_to_archive(zip_file, std_dip_data, "DIP.csv")
+
+        archive.seek(0)
+        return archive
+
+    # Generating the PDFs and the workbook is the slow part of this route: keep it off the event loop.
+    zip_buffer = await run_heavy(build_zip)
 
     return StreamingResponse(
         zip_buffer,

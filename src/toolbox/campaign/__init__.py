@@ -1,6 +1,4 @@
-import io
-from dataclasses import dataclass, InitVar, field
-from typing import Optional
+from dataclasses import dataclass
 
 import pandas as pd
 import geopandas as gpd
@@ -19,12 +17,12 @@ class CampaignDatasets:
     _unique_code: str = None
 
     def __post_init__(self):
-        dip_unique_col = detect_unique_admin_field(self.settlements)
-        if not dip_unique_col:
-            print("No Unique settlement column detected in DIP. Creating")
-            dip_unique_col = 'Unique_Name'
-            dip_data = construct_new_unique(self.settlements, dip_unique_col)
-            self.settlements = dip_data
+        dip_unique_col = 'eha_guid' #detect_unique_admin_field(self.settlements)
+        # if not dip_unique_col:
+        #     print("No Unique settlement column detected in DIP. Creating")
+        #     dip_unique_col = 'Unique_Name'
+        #     dip_data = construct_new_unique(self.settlements, dip_unique_col)
+        #     self.settlements = dip_data
         self._unique_code = dip_unique_col
 
     @property

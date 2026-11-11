@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, submitReachAnalysis } from '../../api/client'
 import { useJobTracker } from '../../state/jobTracker'
 import { parseReachCsv } from '../../api/parseResult'
-import type { ParsedReachResult, ReachFormInput, ReachRecord } from '../../types/reach'
+import type { ParsedReachResult, ReachFormInput, ReachRecord, ReachRunInfo } from '../../types/reach'
 import { detectColumns } from '../../utils/columns'
 import type { DetectedColumns } from '../../utils/columns'
 import {
@@ -32,6 +32,11 @@ import type {
 } from '../../utils/reachAggregate'
 import type { ReachVisitationStatus } from '../../types/reach'
 import ReachForm from './ReachForm'
+import ReachRunningCard from './ReachRunningCard'
+import JobProgress from '../jobLogs/JobProgress'
+import { JOB_LOGS_ENABLED, newClientJobId } from '../../utils/jobLogs'
+import { REACH_STEPS } from '../../utils/jobProgress'
+import ReachEmptyStateCard from './ReachEmptyStateCard'
 import ReachSummaryCards from './ReachSummaryCards'
 import ReachVisitationCards from './ReachVisitationCards'
 import ReachCountCards from './ReachCountCards'
@@ -94,6 +99,17 @@ export default function ReachAnalysisPage() {
   // H2HTrackingPage's settlementView, including defaulting to the table
   // (the map is still one click away via the tab).
   const [settlementView, setSettlementView] = useState<'map' | 'list'>('list')
+  // What was submitted for the run in flight / the run behind `result`. The
+  // CSV response doesn't echo its inputs, and the running + empty-result
+  // cards need to say what was being processed.
+  const [runInfo, setRunInfo] = useState<ReachRunInfo | null>(null)
+  // The id sent with the request so the pipeline progress bar can ask the backend
+  // for this run's log lines while it is still going. Stays null (and the
+  // bar renders nothing) unless VITE_JOB_LOGS=true.
+  const [logJobId, setLogJobId] = useState<string | null>(null)
+  // Wraps the form so the empty-result card's "Back to the form" can scroll
+  // to it (the form owns its own state, so the page can't focus a field).
+  const formRef = useRef<HTMLDivElement>(null)
   const { startJob, completeJob, failJob } = useJobTracker()
 
   async function handleSubmit(input: ReachFormInput) {
@@ -101,9 +117,17 @@ export default function ReachAnalysisPage() {
     setError(null)
     setDrillState(null)
     setDrillLga(null)
+    setRunInfo({
+      plannedFileName: input.plannedSettlementsFile?.name ?? null,
+      dataSourcesFileName: input.dataSourcesFile?.name ?? null,
+      tracksFileName: input.tracksFile?.name ?? null,
+      method: input.method,
+    })
     const jobId = startJob('reach', input.plannedSettlementsFile?.name ?? 'REACH analysis run')
+    const clientJobId = newClientJobId()
+    setLogJobId(JOB_LOGS_ENABLED ? clientJobId : null)
     try {
-      const csvBlob = await submitReachAnalysis(input)
+      const csvBlob = await submitReachAnalysis(input, clientJobId)
       const parsed = await parseReachCsv(csvBlob, `${input.plannedSettlementsFile?.name.split('.')[0] ?? 'reach'}_REACH.csv`)
       setResult(parsed)
       setResultBlob(csvBlob)
@@ -200,6 +224,30 @@ export default function ReachAnalysisPage() {
   const groupNounPlural = drillLevel === 'state' ? 'states' : drillLevel === 'lga' ? 'LGAs' : 'wards'
   const scopeSuffix = drillLga ? ` in ${drillState} → ${drillLga}` : drillState ? ` in ${drillState}` : ''
 
+  // Options for the settlement table's State/LGA selects. States come from
+  // the whole result; LGAs only from the picked state, since an LGA name
+  // alone repeats across states (see lgaKey in utils/reachAggregate.ts).
+  const stateOptions = useMemo(() => {
+    if (!analysis) return []
+    const seen = new Set<string>()
+    for (const record of analysis.records) {
+      const state = cellText(record, analysis.columns.state)
+      if (state) seen.add(state)
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b))
+  }, [analysis])
+
+  const lgaOptions = useMemo(() => {
+    if (!analysis || !drillState) return []
+    const seen = new Set<string>()
+    for (const record of analysis.records) {
+      if (cellText(record, analysis.columns.state) !== drillState) continue
+      const lga = cellText(record, analysis.columns.lga)
+      if (lga) seen.add(lga)
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b))
+  }, [analysis, drillState])
+
   function handleDrillSelect(group: string) {
     if (drillLevel === 'state') setDrillState(group)
     else if (drillLevel === 'lga') setDrillLga(group)
@@ -211,7 +259,9 @@ export default function ReachAnalysisPage() {
 
   return (
     <div>
-      <ReachForm onSubmit={handleSubmit} submitting={submitting} />
+      <div ref={formRef}>
+        <ReachForm onSubmit={handleSubmit} submitting={submitting} />
+      </div>
 
       {error && (
         <div
@@ -229,13 +279,21 @@ export default function ReachAnalysisPage() {
         </div>
       )}
 
-      {submitting && (
-        <div style={{ color: 'var(--color-text-muted)', fontSize: 13, marginBottom: 20 }}>
-          Running REACH triangulation — matching against every data source can take a while for large uploads…
-        </div>
+      {submitting && runInfo && <ReachRunningCard run={runInfo} />}
+
+      <JobProgress jobId={logJobId} running={submitting} steps={REACH_STEPS} />
+
+      {/* A finished run with zero rows gets its own card instead of the
+          dashboard — every card/chart below would otherwise render as zeros. */}
+      {result && analysis && analysis.records.length === 0 && !submitting && (
+        <ReachEmptyStateCard
+          variant="no-rows"
+          run={runInfo}
+          onBackToForm={() => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+        />
       )}
 
-      {analysis && scoped && (
+      {analysis && scoped && analysis.records.length > 0 && (
         <>
           <div
             style={{
@@ -386,18 +444,29 @@ export default function ReachAnalysisPage() {
               {
                 key: 'list',
                 label: 'List',
-                content: <ReachSettlementListTable records={scoped.records} columns={analysis.columns} bare />,
+                content: (
+                  <ReachSettlementListTable
+                    records={scoped.records}
+                    columns={analysis.columns}
+                    filterState={drillState}
+                    filterLga={drillLga}
+                    onFilterStateChange={(state) => {
+                      setDrillState(state)
+                      setDrillLga(null)
+                    }}
+                    onFilterLgaChange={setDrillLga}
+                    stateOptions={stateOptions}
+                    lgaOptions={lgaOptions}
+                    bare
+                  />
+                ),
               },
             ]}
           />
         </>
       )}
 
-      {!result && !submitting && !error && (
-        <div style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>
-          Upload a planned settlements file and a data sources file above and run the analysis to see results here.
-        </div>
-      )}
+      {!result && !submitting && !error && <ReachEmptyStateCard variant="idle" />}
     </div>
   )
 }

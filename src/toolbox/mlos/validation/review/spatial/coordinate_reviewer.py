@@ -16,6 +16,7 @@ from shapely.geometry.base import BaseGeometry
 from shapely.geometry import MultiPolygon, Point, MultiPoint
 
 from toolbox.utils import atimer
+from toolbox.utils.offload import run_heavy
 from toolbox.configs import CONFIG
 from toolbox.access import ReadDBData
 from toolbox.spatial_mgr import GeomColumns, convert_to_geodata
@@ -24,6 +25,10 @@ from toolbox.mlos import AdminColumns, detect_unique_admin_field, construct_new_
 THRESHOLD = 95
 LGA_THRESHOLD = 90
 WARD_THRESHOLD = 98
+
+#TODO: Implement the Consensus and Recommendation Features
+# Consensus will be driven by >=60% of sources being in agreement
+# Recommendations include: Keep Original, Priority Review, Optional Review (less than 60%), Skippable
 
 
 @dataclass(frozen=True)
@@ -82,10 +87,9 @@ def create_ward_id(admin: AdminColumns)-> str:
     return f"{admin.state}_{admin.lga}_{admin.ward}"
 
 
-def match_settlement(settlement_codes: list[str], search_dataset: ReviewDataSet) -> dict[str, dict[str, str|None]] | None:
+def match_settlement(settlement_codes: list[str], search_dataset: ReviewDataSet)->dict[str, dict[str, str|None]] | None:
     try:
         search_result: dict[str, str | None] = {}
-
         search_data: list[str] = search_dataset.data[search_dataset.unique_code].tolist()
         results_array: list[list[int]] = rapidfuzz.process.cdist(                                       # noqa
             settlement_codes, search_data, scorer=rapidfuzz.fuzz.partial_ratio, workers=6).tolist()
@@ -307,36 +311,52 @@ def evaluator(row: pd.Series, target_source: str, ind_source: str):
 
 
 def get_coord(coord: Point | MultiPoint, ax: Literal['x', 'y']) -> float:
-    if coord is None:
+    try:
+        if coord is None:
+            return np.nan
+
+        if isinstance(coord, MultiPoint):
+            coord = coord.centroid
+
+        if ax == 'x':
+            return coord.x
+
+        return coord.y
+    except AttributeError:
         return np.nan
-
-    if isinstance(coord, MultiPoint):
-        coord = coord.centroid
-
-    if ax == 'x':
-        return coord.x
-
-    return coord.y
 
 
 def intersects_grid3_extent(ind_geom: Point|MultiPoint|None, grid3_extent: BaseGeometry) -> bool|None:
-    if ind_geom is None:
+    try:
+        if ind_geom is None or pd.isna(ind_geom):
+            return None
+
+        if pd.isna(grid3_extent) or grid3_extent is None:
+            return None
+
+        if isinstance(ind_geom, MultiPoint):
+            ind_geom = ind_geom.centroid
+
+        return ind_geom.within(grid3_extent)
+    except (TypeError, AttributeError):
         return None
-
-    if isinstance(ind_geom, MultiPoint):
-        ind_geom = ind_geom.centroid
-
-    return ind_geom.within(grid3_extent)
 
 
 def close_to_tracks(ind_geom: Point|MultiPoint|None, tracks_data: BaseGeometry) -> bool|None:
-    if ind_geom is None:
+    try:
+        if ind_geom is None:
+            return None
+
+        if pd.isna(tracks_data):
+            return None
+
+        if isinstance(ind_geom, MultiPoint):
+            ind_geom = ind_geom.centroid
+
+        return ind_geom.dwithin(tracks_data, distance=0.0027000270)
+
+    except (TypeError, AttributeError):
         return None
-
-    if isinstance(ind_geom, MultiPoint):
-        ind_geom = ind_geom.centroid
-
-    return ind_geom.dwithin(tracks_data, distance=0.0027000270)
 
 
 def evaluate_settlements(settlement: gpd.GeoDataFrame, code_col: str, ind_datasets: list[str],
@@ -354,6 +374,7 @@ def evaluate_settlements(settlement: gpd.GeoDataFrame, code_col: str, ind_datase
 
         settlement[f'{ind_dataset}_distance'] = settlement[f'{ind_dataset}_response'].apply(
             lambda x: x.distance if pd.notna(x) else np.nan)
+
         settlement[f'{ind_dataset}_grid3'] = settlement[f'geometry_{ind_dataset}'].apply(
             intersects_grid3_extent, args=(merged_extent,))
 
@@ -452,8 +473,7 @@ def investigate_similarity_response(
     return final_settlements
 
 
-@atimer(display=True)
-async def review_settlement_coordinates(
+def _review_settlement_coordinates(
         source_datasets: dict[str, pd.DataFrame], settlements: pd.DataFrame, tracks: gpd.GeoDataFrame, include_osm: bool) -> pd.DataFrame:
 
     analysis_wards = extract_places(settlements)
@@ -481,25 +501,32 @@ async def review_settlement_coordinates(
     return reviewed_settlements
 
 
+@atimer(display=True)
+async def review_settlement_coordinates(
+        source_datasets: dict[str, pd.DataFrame], settlements: pd.DataFrame, tracks: gpd.GeoDataFrame, include_osm: bool) -> pd.DataFrame:
+    # Matching every settlement against every source (and OSM) is minutes of work: run it in a worker thread (hardening H7).
+    return await run_heavy(_review_settlement_coordinates, source_datasets, settlements, tracks, include_osm)
 
-# if __name__ == '__main__':
-#     import openpyxl
-#     import asyncio
-#
-#     baseline_settlement_file = r"C:\Workspace\MLoS\validation\Kebbi_Harmonised_MLoS_Manager.xlsx"
-#     baseline_df = pd.read_excel(baseline_settlement_file, sheet_name="state")
-#     cols = ['unique_code', 'state_name', 'lga_name', 'ward_name', 'settlement_name', 'latitude', 'longitude']
-#     baseline_df = baseline_df.loc[baseline_df['lga_name'].str.contains('Fakai'), cols]
-#     tracks_data = gpd.read_file(r"C:\Workspace\NEOC\IBRA\August Round\GIS\tracks_day_6.gpkg")
-#     previous_camp_file = r"C:\Workspace\NEOC\IBRA\August Round\Submissions\Standardized\August 2026 IBRA 2 Campaign Submissions.xlsx"
-#     rounds = openpyxl.load_workbook(previous_camp_file).sheetnames
-#     campaign_datasets: dict[str, pd.DataFrame] = {}
-#     for camp_round in tqdm(rounds, desc='Reading Datasets', total=len(rounds)):
-#         df = pd.read_excel(previous_camp_file, sheet_name=camp_round)
-#         campaign_datasets[camp_round] = df
-#
-#     output = asyncio.run(
-#         review_settlement_coordinates(campaign_datasets, baseline_df, tracks_data)
-#     )
-#     output.to_csv(r'C:\Workspace\MLoS\validation\DUplicate.csv', index=False)
+
+
+if __name__ == '__main__':
+    import openpyxl
+    import asyncio
+    folder = 'C:\\Workspace\\NEOC\\MIGRANT MAPPING\\SEPTEMEBR ROUND'
+    baseline_settlement_file = f"{folder}\\Validated Migrant Settlements_States.xlsx"
+    baseline_df = pd.read_excel(baseline_settlement_file)
+    cols = ['unique_code', 'STATE', 'LGA', 'WARD', 'SETTLEMENTS', 'LATITUDE', 'LONGITUDE']
+    # baseline_df = baseline_df.loc[baseline_df['lga_name'].str.contains('Fakai'), cols]
+    tracks_data = gpd.read_file(fr"{folder}\GIS\tracks.gpkg")
+    previous_camp_file = fr"{folder}\Submissions\September 2026 Nomadic Vaccination Submission Datasets.xlsx"
+    rounds = openpyxl.load_workbook(previous_camp_file).sheetnames
+    campaign_datasets: dict[str, pd.DataFrame] = {}
+    for camp_round in tqdm(rounds, desc='Reading Datasets', total=len(rounds)):
+        df = pd.read_excel(previous_camp_file, sheet_name=camp_round)
+        campaign_datasets[camp_round] = df
+
+    output = asyncio.run(
+        review_settlement_coordinates(campaign_datasets, baseline_df, tracks_data, False)
+    )
+    output.to_csv(r'C:\Workspace\MLoS\validation\DUplicate.csv', index=False)
 #

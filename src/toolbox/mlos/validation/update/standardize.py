@@ -28,6 +28,14 @@ def compare_admin_data(row: pd.Series, admin_col: str, admin_names: list) -> str
     return match[0][0]
 
 
+def compare_admin_data_ii(record_admin:str, admin_names: list) -> str:
+    match = process.extractBests(record_admin, admin_names, score_cutoff=80, limit=1)
+    if not match:
+        return record_admin
+
+    return match[0][0]
+
+
 def standardize_admin_records(dataset: pd.DataFrame, purpose: Policy):
     print('Data Cleanup and Standardization of Validation Dataset')
     admin_cols = {

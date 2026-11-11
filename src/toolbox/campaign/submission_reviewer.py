@@ -35,10 +35,14 @@ def review_submission(campaign_dataset: pd.DataFrame, state: State) -> pd.DataFr
         campaign_geodata[col] = campaign_geodata[col].str.title().str.strip()
 
     admin_cols: AdminColumns = AdminColumns(**admin_map)
-    state_data = campaign_geodata.loc[campaign_geodata[admin_cols.state].str.lower() == state.value.lower()]
-    ward_data = ReadDBData('wards', True).read_data({'statecode': state.state_code})
+    if state:
+        campaign_geodata = campaign_geodata.loc[campaign_geodata[admin_cols.state].str.lower() == state.value.lower()]
 
-    enriched_data = state_data.sjoin(ward_data[['lganame', 'wardname', 'geometry']], how="left", predicate='within')
+
+    state_filter = {'statename': [state.name]} if state else {}
+    ward_data = ReadDBData('wards', True).read_data(state_filter)
+
+    enriched_data = campaign_geodata.sjoin(ward_data[['lganame', 'wardname', 'geometry']], how="left", predicate='within')
     enriched_data['wrong_lga'] = enriched_data.apply(
         lambda row: compare_admin_info(row[admin_cols.lga], row['lganame']), axis=1)
 
@@ -58,9 +62,9 @@ def review_submission(campaign_dataset: pd.DataFrame, state: State) -> pd.DataFr
     )
 
     print(f"""
-    Total Dataset Submissions: {len(state_data)}\n
+    Total Dataset Submissions: {len(campaign_geodata)}\n
     Validated Dataset Submissions: {len(passed_data)}\n
-    Failed QC Submissions: {len(state_data) - len(passed_data)}
+    Failed QC Submissions: {len(campaign_geodata) - len(passed_data)}
     """
     )
 

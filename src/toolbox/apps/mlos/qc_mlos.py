@@ -1,9 +1,6 @@
-import tempfile
-
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, UploadFile
-from fastapi.responses import FileResponse
 
 from toolbox.models import State
 from toolbox.utils import timer, logger
@@ -12,6 +9,8 @@ from toolbox.mlos.transform import standardize_mlos_records
 from toolbox.tools import issues_counter, generate_output_name
 from toolbox.mlos.validation.review.run_validate import run_settlements_qc
 from toolbox.mlos import get_admin_col, detect_unique_admin_field, construct_new_unique
+from toolbox.utils.offload import run_heavy
+from toolbox.utils.tempfiles import afile_response
 
 
 router = APIRouter()
@@ -57,27 +56,23 @@ async def validate_mlos(mlos_file_path: UploadFile, standardize: bool=None, cons
     mlos_data: pd.DataFrame = await read_dataset(mlos_file_path)
     get_admin_col(mlos_data, 'state', 'raise')
 
-    if standardize:
-        print('Standardizing MLoS Records')
-        mlos_data = standardize_mlos_records(mlos_data)
+    def prepare(data: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+        if standardize:
+            print('Standardizing MLoS Records')
+            data = standardize_mlos_records(data)
 
-    unique_col = detect_unique_admin_field(mlos_data)
-    if not unique_col:
-        unique_col = 'unique_code'
-        mlos_data = construct_new_unique(mlos_data, unique_col)
+        unique_col = detect_unique_admin_field(data)
+        if not unique_col:
+            unique_col = 'unique_code'
+            data = construct_new_unique(data, unique_col)
+        return data, unique_col
+
+    mlos_data, unique_col = await run_heavy(prepare, mlos_data)
 
     qc_ed_mlos: pd.DataFrame = await run_settlements_qc(mlos_data, unique_col, consistency, deep_search)
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    qc_ed_mlos.to_csv(temp_file.name, index=False)
-    temp_file.close()
-
     save_name = generate_output_name(mlos_file_path.filename, 'csv', 'QC')
-    return FileResponse(
-        temp_file.name,
-        media_type="text/csv",
-        filename=save_name
-    )
+    return await afile_response(lambda path: qc_ed_mlos.to_csv(path, index=False), '.csv', 'text/csv', save_name)
 
 
 if __name__ == '__main__':

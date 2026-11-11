@@ -41,7 +41,12 @@ export default function PostImplementationPage() {
       completeJob(jobId)
     } catch (err) {
       if (err instanceof ApiError) {
-        setError({ message: `Request failed with status ${err.status}.`, detail: err.detail })
+        // detail === '' means the message is already readable (see throwIfNotOk in api/client.ts).
+        setError(
+          err.detail === ''
+            ? { message: err.message, detail: null }
+            : { message: `Request failed with status ${err.status}.`, detail: err.detail },
+        )
       } else {
         setError({ message: err instanceof Error ? err.message : 'The request failed.', detail: null })
       }

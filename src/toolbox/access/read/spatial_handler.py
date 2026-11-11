@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pyogrio
 import geopandas as gpd
 from fastapi import UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from toolbox.utils import atimer
 from toolbox.tools import extract_and_find_file
@@ -169,32 +170,39 @@ class OSGeoHandler:
             raise NotSupportedError(
                 f"{self.extension} not supported", details="Only .gpkg, .sqlite, or .db files are accepted")
 
-        file_path = await self.save_uploaded_file() if self._is_upload(self.file_path) else self.file_path
+        is_upload = self._is_upload(self.file_path)
+        file_path = await self.save_uploaded_file() if is_upload else self.file_path
 
         try:
-            if not self.is_valid_sqlite(file_path):
-               logging.error("Invalid database")
-               raise DataError("invalid data", details="Invalid SQLite database")
-
-            # Get available spatial tables if none specified
-            available_tables = self.get_spatial_tables(file_path)
-            if self.table_name and self.table_name not in available_tables:
-                raise TableNotFound(
-                    f"{self.table_name} not found",
-                    details=f"{self.table_name} not found. Available tables: {', '.join(available_tables)}"
-                )
-
-            logging.info('Reading Dataset')
-            layer = self.table_name if self.table_name else None
-            gdf = gpd.read_file(file_path, layer=layer)
-
-            # Clean up the temporary file
-            if self._is_upload(file_path):
-                os.unlink(file_path)
-
-            return gdf
+            # Checking, listing and reading the database is blocking work: keep it off the event loop.
+            return await run_in_threadpool(self._read_layer, file_path)
 
         except Exception as e:
             logging.error(f'Error Encountered: {e}')
-            os.unlink(file_path) if self._is_upload(file_path) else None
             raise
+
+        finally:
+            # The saved copy of the upload is only needed for the read; it used to be left behind
+            # because the check was made on the saved path instead of on the upload.
+            if is_upload:
+                try:
+                    os.unlink(file_path)
+                except OSError:
+                    logging.warning(f'Could not delete temporary file {file_path}')
+
+    def _read_layer(self, file_path: str):
+        if not self.is_valid_sqlite(file_path):
+            logging.error("Invalid database")
+            raise DataError("invalid data", details="Invalid SQLite database")
+
+        # Get available spatial tables if none specified
+        available_tables = self.get_spatial_tables(file_path)
+        if self.table_name and self.table_name not in available_tables:
+            raise TableNotFound(
+                f"{self.table_name} not found",
+                details=f"{self.table_name} not found. Available tables: {', '.join(available_tables)}"
+            )
+
+        logging.info('Reading Dataset')
+        layer = self.table_name if self.table_name else None
+        return gpd.read_file(file_path, layer=layer)

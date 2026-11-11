@@ -1,13 +1,13 @@
-import tempfile
 import logging
 
 from fastapi import APIRouter, UploadFile
-from fastapi.responses import FileResponse
 
 from toolbox.tools import generate_output_name
 from toolbox.utils import timer, logger
 from toolbox.access.read_mgr import read_dataset
 from toolbox.mlos.transform import standardize_mlos_records
+from toolbox.utils.offload import run_heavy
+from toolbox.utils.tempfiles import afile_response
 
 router = APIRouter()
 logger(log_name='Standardize')
@@ -36,15 +36,7 @@ async def standardize_mlos(mlos_file_path: UploadFile):
     mlos_data = await read_dataset(mlos_file_path)
 
     print('Standardizing MLOS...')
-    standardized_mlos = standardize_mlos_records(mlos_data)
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    standardized_mlos.to_csv(temp_file.name, index=False)
-    temp_file.close()
-
+    standardized_mlos = await run_heavy(standardize_mlos_records, mlos_data)
     logging.info('Exporting Standardized Data')
     save_name = generate_output_name(mlos_file_path.filename, 'csv', 'standardized')
-    return FileResponse(
-        temp_file.name,
-        media_type="text/csv",
-        filename=save_name
-    )
+    return await afile_response(lambda path: standardized_mlos.to_csv(path, index=False), '.csv', 'text/csv', save_name)

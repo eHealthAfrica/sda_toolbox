@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import string
 import zipfile
 import tempfile
@@ -10,7 +11,9 @@ from datetime import datetime
 
 import pandas as pd
 from tqdm import tqdm
+from starlette.concurrency import run_in_threadpool
 
+from toolbox.tools import is_empty
 from toolbox.configs import CONFIG
 from toolbox.reporting import Report
 from toolbox.exceptions import MissingConfiguration, DataError
@@ -47,7 +50,6 @@ def parse_read_parameters_ii(parameters: dict[str, Any]):
     values = {}
     for field, value in parameters.items():
         placeholder = field.split('_')[0][:3]
-        # value_map = f"({placeholder})" if len(value_ls)>1 else placeholder
         field_query = f"{field} = ANY(:{placeholder})"
         queries.append(field_query)
         values[placeholder] = value if isinstance(value, list) else [value]
@@ -93,7 +95,8 @@ def generate_output_name(input_file_name: str, ext: str, suffix: str=None):
 async def save_uploaded_file(upload_file: Any, temp_dir, factor:int =1):
     """Stream the upload to disk without loading entirely into memory"""
     logging.info('Saving to Temporary Folder')
-    zip_path = os.path.join(temp_dir, upload_file.filename)
+    filename = upload_file.filename if hasattr(upload_file, 'filename') else os.path.basename(upload_file)
+    zip_path = os.path.join(temp_dir, filename)
     with open(zip_path, "wb") as f:
         while contents := await upload_file.read((1024*factor) * (1024*factor)):  # 1MB chunks
             f.write(contents)
@@ -198,6 +201,16 @@ async def aggregate_validated_data(validated_data_files: Any):
     return dataset
 
 
+def _read_workbook_sheets(content: bytes, filename: str) -> dict[str, pd.DataFrame]:
+    """Every sheet of an Excel workbook as a DataFrame (blocking pandas work, run in a worker thread)."""
+    content_io = io.BytesIO(content)
+    sheet_names: list[str] = pd.ExcelFile(content_io).sheet_names
+    return {
+        sheet_name: pd.read_excel(content_io, sheet_name=sheet_name)
+        for sheet_name in tqdm(sheet_names, desc=f'Reading {filename}')
+    }
+
+
 async def read_compiled_data(validated_data_files: Any) -> dict[str, pd.DataFrame]:
     extension = validated_data_files.filename.split('.')[-1]
 
@@ -205,19 +218,26 @@ async def read_compiled_data(validated_data_files: Any) -> dict[str, pd.DataFram
         raise DataError('unknown data format', 'please provide a zipped or excel workbook')
 
     if extension == 'zip':
-        datasets = read_zip_file_in_memory_ii(validated_data_files)
+        datasets = await run_in_threadpool(read_zip_file_in_memory_ii, validated_data_files)
 
     else:
         read_data_files = await validated_data_files.read()
-        content_io = io.BytesIO(read_data_files)
-        # content = content_io.getvalue()
-        sheet_names: list[str] = pd.ExcelFile(content_io).sheet_names
-        datasets = {
-            sheet_name: pd.read_excel(content_io, sheet_name=sheet_name)
-            for sheet_name in tqdm(sheet_names, desc=f'Reading {validated_data_files.filename}')
-        }
+        datasets = await run_in_threadpool(_read_workbook_sheets, read_data_files, validated_data_files.filename)
 
     return datasets
+
+
+def value_is_uuid4(value: str | None):
+    if is_empty(value):
+        return False
+
+    uuid4 = CONFIG['REGEX']['UUID4']
+    regex_pattern = rf"{uuid4}"
+    check = re.match(regex_pattern, value)
+    if not check:
+        return False
+
+    return bool(check)
 
 
 def is_uuid4(series: pd.Series) -> bool:

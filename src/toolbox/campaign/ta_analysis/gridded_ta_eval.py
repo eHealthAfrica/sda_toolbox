@@ -1,5 +1,6 @@
 import logging
 
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 
@@ -38,8 +39,10 @@ def generate_ta_cumulative_summary(target_area: gpd.GeoDataFrame, unique_col: st
 def calculate_coverage(summary_data: pd.DataFrame) -> pd.DataFrame:
     """Sets the Visitation Status and Calculates Coverage"""
     logging.info('Calculating Settlement Coverage')
-    summary_data['visitation'] = summary_data.apply(
-        lambda row: 'Visited' if row['Visited']>=1 else 'Not Yet Visited', axis=1
+    summary_data['visitation'] = np.where(
+        summary_data['Visited']>=1,
+        'Visited',
+        'Not Yet Visited'
     )
 
     summary_data['Coverage'] = summary_data['Visited']/summary_data['Total']
@@ -66,7 +69,12 @@ def find_and_update_visited_grids(tracks: gpd.GeoDataFrame, target_area: gpd.Geo
         target_area_columns += ['visitation']
 
     joined_2 = target_area.sjoin(tracks, how='left', predicate='intersects', rsuffix='tracks').reset_index()
-    joined_2['cumm'] = joined_2.apply(lambda row: 'Visited' if pd.notna(row['index_tracks']) else 'Not Visited', axis=1)
+    joined_2['cumm'] = np.where(
+        pd.notna(joined_2['index_tracks']),
+        'Visited',
+        'Not Yet Visited'
+    )
+
     joined_2['visitation'] = joined_2.apply(update_visitation, axis=1)
     updated_ta = joined_2.loc[:, target_area_columns]
 
@@ -75,10 +83,10 @@ def find_and_update_visited_grids(tracks: gpd.GeoDataFrame, target_area: gpd.Geo
 
 def gridded_settlement_visitation(tracks: gpd.GeoDataFrame, states: list[str]):
     datasets: dict = CONFIG['DATASETS']
-    gridded_ta_data = ReadDBData(datasets['gridded_settlement_extent'], True).read_data({'state_name': states})
-    gridded_ta_col: str | None = detect_unique_admin_field(gridded_ta_data)
+    gridded_ta_data = ReadDBData(datasets['gridded_settlement_extent'], True).read_data({'statename': states})
+    gridded_ta_col: str | None ='eha_guid' # detect_unique_admin_field(gridded_ta_data)
     if not gridded_ta_col:
-        gridded_ta_col: str = 'uniquecode'
+        gridded_ta_col: str = 'eha_guid'
         gridded_ta_data = construct_new_unique(gridded_ta_data, gridded_ta_col)
 
     if "index_tracks" in gridded_ta_data.columns:

@@ -13,6 +13,7 @@ from fuzzywuzzy import process
 from toolbox.spatial_mgr import GeomColumns
 from toolbox.tools import detect_settlement_id_field
 from toolbox.mlos import detect_unique_admin_field, construct_new_unique
+from toolbox.utils.offload import run_heavy
 
 
 def create_coord_id(dataset: pd.DataFrame, geom_cols: GeomColumns) -> pd.DataFrame:
@@ -263,7 +264,7 @@ def evaluate_contact(baseline_data: Dataset, comparative_data: Dataset):
     return baseline_data
 
 
-async def execute_contact_analysis(baseline_settlements: pd.DataFrame, comparative_settlements: dict[str, pd.DataFrame]) -> pd.DataFrame:
+def _contact_analysis(baseline_settlements: pd.DataFrame, comparative_settlements: dict[str, pd.DataFrame]) -> pd.DataFrame:
     logging.info('Generating Datasets')
     baseline_dataset = create_dataset(baseline_settlements, 'baseline')
     previous_rounds_datasets = []
@@ -280,6 +281,11 @@ async def execute_contact_analysis(baseline_settlements: pd.DataFrame, comparati
     processed_data = evaluate_settlement_coverage(processed_data)
     processed_data.drop(columns=['coord_id'], inplace=True)
     return processed_data
+
+
+async def execute_contact_analysis(baseline_settlements: pd.DataFrame, comparative_settlements: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    # Triangulating every previous campaign is minutes of pandas work: run it in a worker thread (hardening H7).
+    return await run_heavy(_contact_analysis, baseline_settlements, comparative_settlements)
 
 
 if __name__ == '__main__':

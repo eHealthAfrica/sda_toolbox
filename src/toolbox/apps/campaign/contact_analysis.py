@@ -1,4 +1,3 @@
-import tempfile
 import logging
 
 
@@ -11,6 +10,7 @@ from toolbox.tools import read_compiled_data, generate_output_name
 from toolbox.access.read_mgr import read_dataset
 from toolbox.mlos import get_admin_col
 from toolbox.utils import logger
+from toolbox.utils.tempfiles import afile_response
 
 router = APIRouter()
 logger(log_name='Contact Analysis')
@@ -46,13 +46,5 @@ async def inter_campaign_contact_analysis(base_file: UploadFile = File(...), pre
     logging.info('Starting contact analysis')
     updated_base_data: pd.DataFrame = await execute_contact_analysis(base_data, previous_campaigns)
 
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    updated_base_data.to_csv(temp_file.name, index=False)
-    temp_file.close()
-
     save_name = generate_output_name(base_file.filename, 'csv', 'Contact Analysis')
-    return FileResponse(
-        temp_file.name,
-        media_type="text/csv",
-        filename=save_name
-    )
+    return await afile_response(lambda path: updated_base_data.to_csv(path, index=False), '.csv', 'text/csv', save_name)

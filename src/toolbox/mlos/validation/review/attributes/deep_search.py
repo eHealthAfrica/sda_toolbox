@@ -18,7 +18,7 @@ from toolbox.configs import CONFIG
 from toolbox.mlos import get_admin_col
 from toolbox.tools import coords_are_valid
 from toolbox.spatial_mgr import GeomColumns
-from toolbox.exceptions import MissingConfiguration
+from toolbox.exceptions import MissingConfiguration, DataError
 
 
 class DuplicateType(Enum):
@@ -76,7 +76,7 @@ def parse_unique_settlement_name(record: str):
         str: New Settlement Name
     """
     if not isinstance(record, str):
-        raise ValueError('Settlement name must be a string')
+        raise ValueError(f'Settlement name {record} is not a string')
 
     return record.split('_')[-1]
 
@@ -111,24 +111,62 @@ def update_master_data(master_data: pd.DataFrame, admin_col: str, settlement_act
 
 
 def manage_checked_pairs(reviewed_pairs: list):
-    ls = list(chain.from_iterable(reviewed_pairs))
-    return [
-        ls[i: i + 2]
-        for i in range(0, len(ls), 5)
-    ]
+    """The [settlement 1, settlement 2] of every pair reviewed so far.
+
+    Each reviewed record is [settlement 1, settlement 2, review, score, distance, source1, source2]. This
+    used to cut the flattened records every 5 values, which stopped lining up once the two source values
+    were added, so a pair was no longer recognised when it came round again the other way.
+    """
+    return [list(record[:2]) for record in reviewed_pairs]
+
+# def get_sources(df: pd.DataFrame, unique_col: str, ref_col: str,  *pair)-> list:
+#     name1, name2 = pair
+#     col_index = df.columns.get_loc(ref_col)
+#     matched_indexes = df.index[df[unique_col]==name1].tolist()
+#     name1_index = matched_indexes[0]
+#     name1_source = df.iloc[name1_index, col_index]
+#     name2_matched_index = df.index[df[unique_col]==name2].tolist()
+#     if len(name2_matched_index) > 1:
+#         if name1_index in name2_matched_index:
+#             cleaned_result = name2_matched_index.remove(na)
+
+def _source_text(values: Iterable) -> str:
+    """The source values of one settlement as text: blanks are left out and numbers are written as they are.
+
+    A settlement with no source gives an empty string. Joining the raw values failed ("expected str
+    instance, float found") on any file where a Source cell was empty or numeric.
+    """
+    texts = []
+    for value in values:
+        if value is None or (isinstance(value, float) and value != value):
+            continue
+        text = str(value).strip()
+        if text and text.lower() not in ('nan', 'none', '<na>', 'nat'):
+            texts.append(text)
+    return " | ".join(dict.fromkeys(texts))
+
+
+def get_sources_unrefined(df: pd.DataFrame, unique_col: str, *pair) -> list[str]:
+    try:
+        settlement_pair = pair[0]
+        sett1, sett2 = settlement_pair
+        source_1: list = df.loc[df[unique_col] == sett1, 'Source'].tolist()
+        source_2: list = df.loc[df[unique_col] == sett2, 'Source'].tolist()
+    except KeyError as e:
+        raise DataError('Missing attribute', f'Data is missing {e} Field')
+    return [_source_text(source_1), _source_text(source_2)]
 
 
 def review_ward_settlement_for_duplicates(
         pairing: Iterable, master_data: pd.DataFrame,
-        unique_col: str, geo_cols: GeomColumns | None, threshold: int)-> list | None:
+        unique_col: str, geo_cols: GeomColumns | None, threshold: int, cross_ref: bool)-> list | None:
 
     checked_pair = []
+    reviewed = set()
     skipped = 0
     for pair in tqdm(list(pairing), desc="Comparing Ward Settlement Pairs"):
         pair = list(pair)
-        reversed_pair = pair[::-1]
-        collected = manage_checked_pairs(checked_pair)
-        if reversed_pair in collected:
+        if (pair[1], pair[0]) in reviewed:
             skipped += 1
             continue
 
@@ -138,31 +176,35 @@ def review_ward_settlement_for_duplicates(
         if duplicate_type == DuplicateType.NOT_DUPLICATE:
             continue
 
+        sources = get_sources_unrefined(master_data, unique_col, pair) if cross_ref else [None, None]
         if geo_cols is None:
-            pair += ['Duplicate Review', score, None]
+            pair += ['Duplicate Review', score, None] + sources
             checked_pair.append(pair)
+            reviewed.add((pair[0], pair[1]))
             continue
 
         coords: list[list[float]] = master_data.loc[
             master_data[unique_col].isin(pair), [geo_cols.latitude, geo_cols.longitude]].values.tolist()
         if not coords_are_valid(coords):
-            pair += ['Duplicate Review', score, None]
+            pair += ['Duplicate Review', score, None] + sources
             checked_pair.append(pair)
+            reviewed.add((pair[0], pair[1]))
             continue
 
-        coord_1, coord_2 = coords
+        coord_1, coord_2 = coords[0], coords[1]
         distance_meters = round(geodesic(coord_1, coord_2).meters, 3)
 
         if distance_meters > 65:
-            pair += ['Unlikely Potential Duplicate Review', score, distance_meters]
+            pair += ['Unlikely Potential Duplicate Review', score, distance_meters] + sources
 
         elif 10 < distance_meters < 65:
-            pair += ['Duplicate Review', score, distance_meters]
+            pair += ['Duplicate Review', score, distance_meters] + sources
 
         else:
-            pair += ['Duplicate Remove', score, distance_meters]
+            pair += ['Duplicate Remove', score, distance_meters] + sources
 
         checked_pair.append(pair)
+        reviewed.add((pair[0], pair[1]))
 
     return checked_pair if len(checked_pair) >= 1 else None
 
@@ -170,10 +212,11 @@ def review_ward_settlement_for_duplicates(
 @timer(display=True)
 def duplicate_deep_search_protocol(
         dataset: pd.DataFrame, unique_admin_col: str, threshold: int,
-        geom_cols: GeomColumns, output: Literal['update', 'mapping']) -> pd.DataFrame:
+        geom_cols: GeomColumns, output: Literal['update', 'mapping'], cross_reference: bool) -> pd.DataFrame:
 
     try:
         logging.info('Using similarity protocol for duplicate search')
+
         unique_ward_grouping: list[list] = group_settlement_by_admin(dataset, unique_admin_col)
         permutation_ward_settlement_grouping = [
             permutations(admin_group, 2) for admin_group
@@ -187,7 +230,7 @@ def duplicate_deep_search_protocol(
             futures = [
                 executor.submit(
                     review_ward_settlement_for_duplicates, ward_pair, dataset,
-                    unique_admin_col, geom_cols, threshold
+                    unique_admin_col, geom_cols, threshold, cross_reference
                 )
 
                 for ward_pair in permutation_ward_settlement_grouping
@@ -198,6 +241,8 @@ def duplicate_deep_search_protocol(
                 checked.append(result)
 
         final_checked = [data for data in checked if data is not None]
+        if not final_checked:
+            return pd.DataFrame()
 
         if output == 'update':
             action_map = flatten_issues_data(final_checked)
@@ -211,7 +256,7 @@ def duplicate_deep_search_protocol(
 
 
 def generate_mapping_table(reviewed_data: list[tuple[str,...]])-> pd.DataFrame:
-    columns = ['settlement 1', 'settlement 2', 'review', 'score', 'distance']
+    columns = ['settlement 1', 'settlement 2', 'review', 'score', 'distance', 'source1', 'source2']
     reviewed_data = [outcome for outcome in reviewed_data if outcome is not None]
     flattened_data = chain.from_iterable(reviewed_data)
     reviewed_df = pd.DataFrame.from_records(flattened_data, columns=columns)
@@ -227,20 +272,24 @@ def generate_mapping_table(reviewed_data: list[tuple[str,...]])-> pd.DataFrame:
     reviewed_df['settlement 2'] = reviewed_df['settlement 2'].apply(parse_unique_settlement_name)
 
     return reviewed_df.loc[:,
-    ['state', 'lga', 'ward', 'settlement 1', 'settlement 2', 'score', 'distance', 'review']
+    ['state', 'lga', 'ward', 'settlement 1', 'settlement 2', 'score', 'distance', 'review', 'source1', 'source2']
     ].sort_values(by=['state', 'lga', 'ward', 'settlement 1', 'settlement 2'])
 
 
 if __name__ == '__main__':
-    df = pd.read_csv(
-        r"C:\Users\enyinnaya.nwaiwu\Downloads\20260909_Migrant Sites Linelist_vFinal.xlsx - Final Migrant Sites.csv")
+    from toolbox.mlos.mtools import construct_new_unique
+    df = pd.read_excel(
+        r"C:\Users\enyinnaya.nwaiwu\Downloads\20261023_Final Settlements List for November 2026 Campaign_v9.xlsx")
     # isolate duplicated and add concatenate into result
+    # df = construct_new_unique(df, 'unique_code')
+    geom = GeomColumns.get_geom_cols(df, True)
     df_checked = duplicate_deep_search_protocol(
         df,
         threshold=92,
         unique_admin_col='unique_code',
-        geom_cols=GeomColumns(latitude='LATITUDE', longitude='LONGITUDE'),
-        output='mapping'
+        geom_cols=geom,
+        output='mapping',
+        cross_reference=False
     )
 
-    df_checked.to_csv(r"C:\Workspace\MIGRANT MAPPING\Migrant Sites_Potential Duplicates.csv", index=False)
+    df_checked.to_excel(r"C:\Workspace\NEOC\NIPDs\NOV ROUND\November 2026 NIPDs Planned Settlements Duplicate Review 2.xlsx", index=False)

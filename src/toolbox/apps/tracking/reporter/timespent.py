@@ -1,14 +1,14 @@
-import tempfile
 from typing import Literal
 from datetime import datetime
 
 import pandas as pd
 import geopandas as gpd
 from fastapi import APIRouter, UploadFile
-from fastapi.responses import FileResponse
 
 from toolbox.access.read_mgr import read_dataset
 from toolbox.reporting import execute_timespent_analysis
+from toolbox.utils.offload import run_heavy
+from toolbox.utils.tempfiles import afile_response
 
 router = APIRouter()
 
@@ -48,7 +48,7 @@ async def timespent_analysis(
     else:
         today = pd.Timestamp.today()
 
-    result = execute_timespent_analysis(tracks_data, today, output, interval_hr)
+    result = await run_heavy(execute_timespent_analysis, tracks_data, today, output, interval_hr)
 
     suffix_map = {
         'table': 'csv',
@@ -66,13 +66,4 @@ async def timespent_analysis(
     }
 
     suffix = suffix_map.get(output)
-    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f'.{suffix}')
-    writer(tmp_file.name)
-    tmp_file.close()
-
-    return FileResponse(
-        tmp_file.name,
-        media_type=out_media.get(output),
-        filename=f'timespent_analysis.{suffix}'
-
-    )
+    return await afile_response(writer, f'.{suffix}', out_media.get(output), f'timespent_analysis.{suffix}')

@@ -27,7 +27,7 @@ class State(Enum):
     Edo = 'Edo'
     Ekiti = 'Ekiti'
     Enugu = 'Enugu'
-    FCT = 'FCT'
+    Fct = 'FCT'
     Gombe = 'Gombe'
     Imo = 'Imo'
     Jigawa = 'Jigawa'

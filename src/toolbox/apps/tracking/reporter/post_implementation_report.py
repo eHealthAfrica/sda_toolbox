@@ -4,6 +4,7 @@ from fastapi import APIRouter, UploadFile, Form
 from toolbox.tools import find_column
 from toolbox.access.read_mgr import read_dataset
 from toolbox.reporting.create_reports import generate_post_implementation_report, PostReport
+from toolbox.utils.offload import run_heavy
 
 router = APIRouter()
 
@@ -29,7 +30,7 @@ async def generate_post_implementation_reports(settlement_list: UploadFile, repo
     tracking_data = await read_dataset(settlement_list)
     report_col = find_column(tracking_data, report_col, 'raise')
 
-    post_report: list[PostReport] = generate_post_implementation_report(tracking_data, report_col)
+    post_report: list[PostReport] = await run_heavy(generate_post_implementation_report, tracking_data, report_col)
     # zip_buffer = write_in_memory_zip(post_implementation_report, post_report, lga_list=lgas)
 
     return post_report

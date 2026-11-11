@@ -4,6 +4,7 @@ DATASETS:
   ward_boundary: wards
 
   buildings_footprint: building_fp
+  obuildings: obuildings_fp
   grid_3_extent: settlement_extent
   settlement_extent: ta
   gridded_settlement_extent: gridded_ta
@@ -30,7 +31,6 @@ PRJ_EPSG: 32631
 SOURCE_EPSG: 4326
 SLEEP_DURATION_SECS: 10
 HR: 3600
-BUILDING_LIMIT: 2
 AREA_LIMIT: 30
 
 
@@ -199,6 +199,7 @@ EXCLUSIONS:
   - mlos_id
   - eha_guid
 
+
 REVIEW_COLS:
   - similarity
   - latitude
@@ -206,7 +207,6 @@ REVIEW_COLS:
   - distance
   - grid3
   - near_tracks
-
 
 
 KEYWORDS:
@@ -245,3 +245,67 @@ REMAPPERS:
     habitational_status: settlement_habitation
     take_off_point: take_off_point
     comment: comment
+
+
+TAKE-OFF-POINTS:
+  PHC: 2
+  HF: 4
+  GH: 3
+  HP: 4
+  MCH: 3
+  MDG: 4
+  Dispensary: 4
+  NPI: 1
+  WCWC: 4
+  TcHF: 4
+  Zonal Office: 5
+  Ward: 5
+
+CHECKOUT:
+  COLUMNS:
+    - state_code
+    - state_name
+    - lga_code
+    - lga_name
+    - ward_name
+    - ward_code
+    - takeoffpoint
+    - takeoffpoint_code
+    - settlement_name
+    - primarysettlement_name
+    - alternate_name
+    - latitude
+    - longitude
+    - security_compromised
+    - accessibility_status
+    - reasons_for_inaccessibility
+    - habitational_status
+    - set_population
+    - set_target
+    - number_of_household
+    - noncompliant_household
+    - team_code
+    - day_of_activity
+    - urban
+    - rural
+    - highrisk
+    - slums
+    - densely_populated
+    - hard2reach
+    - border
+    - nomadic
+    - scattered
+    - riverine
+    - fulani
+
+
+  EXCLUSIONS:
+    - last_updated
+    - editor
+    - timestamp
+    - source
+    - eha_guid
+    - fc_globalid
+    - settlementarea_globalid
+
+EXCLUDED_BDS:

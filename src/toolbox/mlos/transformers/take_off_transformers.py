@@ -64,10 +64,3 @@ def standardize_take_off_point(mlos_data: pd.DataFrame, attributes: MLoSAttribut
         capitalize_facility_type, args=(keyword_pattern, facility_types))
 
     return mlos_data
-
-
-if __name__ == '__main__':
-    bauchi_df = pd.read_csv(r"C:\Users\enyinnaya.nwaiwu\Downloads\Bauchi Take off _cordinates.csv")
-    attributes: MLoSAttributes = MLoSAttributes()(bauchi_df, CONFIG.get('ATTRIBUTE_COLUMNS'), global_id='eha_guid')
-    updated_df = standardize_take_off_point(bauchi_df, attributes)
-    updated_df.to_csv("updated_bauchi_takeoff.csv", index=False)

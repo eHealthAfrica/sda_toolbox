@@ -12,7 +12,7 @@ from toolbox.access import ReadDBData
 from toolbox.mlos.mtools import concat_columns
 from toolbox.triangulate.ttools import set_reach
 from toolbox.mlos import get_admin_col, AdminColumns
-from toolbox.mlos.validation.update.standardize import compare_admin_data
+from toolbox.mlos.validation.update.standardize import compare_admin_data, compare_admin_data_ii
 from toolbox.mlos.transformers.common import standardize_value, update_abbreviations
 
 
@@ -60,12 +60,31 @@ def clean_state_dataset(
 
         state_dataset[admin.state] = state.name.title()
         for col, boundary_col in zip([admin.lga, admin.ward], [boundary_lga_col, boundary_ward_col]):
-            state_dataset[col] = state_dataset.apply(
-                compare_admin_data, args=(col, state_boundary[boundary_col].unique().tolist()), axis=1)
+            state_dataset[col] = state_dataset[col].str.title()
+
+        # state_dataset['unique_lgas'] = state_dataset[admin.state] + '_' + state_dataset[admin.lga]
+        unique_lgas = state_dataset[admin.lga].unique().tolist()
+        state_lgas = state_boundary[boundary_lga_col].unique().tolist()
+        lga_renamer = {lga: compare_admin_data_ii(lga, state_lgas) for lga in unique_lgas}
+        state_dataset[admin.lga] = state_dataset[admin.lga].map(lga_renamer)
+
+        state_dataset['unique_wards'] = state_dataset.apply(
+            lambda row: f"{row[admin.lga]}*{row[admin.ward]}", axis=1)
+
+        state_boundary['unique_wards'] = state_boundary.apply(
+            lambda row: f"{row[boundary_lga_col]}*{row[boundary_ward_col]}", axis=1)
+
+        unique_data_ward = state_dataset['unique_wards'].unique().tolist()
+        unique_boundary_wards = state_boundary['unique_wards'].unique().tolist()
+        ward_renamer = {ward: compare_admin_data_ii(ward, unique_boundary_wards) for ward in unique_data_ward}
+        state_dataset['unique_wards'] = state_dataset['unique_wards'].map(ward_renamer)
+        state_dataset['unique_wards'] = state_dataset['unique_wards'].str.split('*')
+        state_dataset[admin.ward] = state_dataset['unique_wards'].str[-1]
 
         state_dataset[admin.settlement] = state_dataset[admin.settlement].apply(standardize_value)
         state_dataset[admin.settlement] = state_dataset.apply(update_abbreviations, args=(admin.settlement,), axis=1)
         state_dataset[unique_code] = state_dataset.apply(concat_columns, args=(admin,), axis=1)
+
         state_dataset.dropna(subset=[unique_code], inplace=True)
         state_dataset.drop_duplicates(subset=unique_code, inplace=True)
         state_datasets_ls.append(state_dataset)

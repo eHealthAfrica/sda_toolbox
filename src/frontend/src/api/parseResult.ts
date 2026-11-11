@@ -6,6 +6,7 @@ import type { DuplicateCheckerRecord, ParsedDuplicateCheckerResult } from '../ty
 import type { CoordinateReviewRecord, ParsedCoordinateReviewResult } from '../types/coordinateReview'
 import { detectSourceNames } from '../utils/coordinateReviewAggregate'
 import type { ParsedReachResult, ReachRecord } from '../types/reach'
+import type { DeviceTrackingRecord, ParsedDeviceTrackingResult } from '../types/deviceTracking'
 import type { MlosOpsRecord, ParsedMlosOpsDataset } from '../types/mlosOps'
 import type { ParsedTracksResult, TrackPoint } from '../types/compilerTracks'
 import { TRACKS_LAYER_NAME } from '../types/compilerTracks'
@@ -132,7 +133,8 @@ export async function parseDuplicateCheckerCsv(blob: Blob, sourceFilename: strin
 
   const parsed = Papa.parse<DuplicateCheckerRecord>(csvText, {
     header: true,
-    dynamicTyping: true,
+    // The two source columns stay text: a source such as "007" must not turn into the number 7.
+    dynamicTyping: (field) => field !== 'source1' && field !== 'source2',
     skipEmptyLines: true,
   })
 
@@ -148,6 +150,8 @@ export async function parseDuplicateCheckerCsv(blob: Blob, sourceFilename: strin
   const records: DuplicateCheckerRecord[] = parsed.data.map((r) => ({
     ...r,
     distance: r.distance === null || r.distance === undefined || (r.distance as unknown) === '' ? null : Number(r.distance),
+    source1: r.source1 ? String(r.source1) : '',
+    source2: r.source2 ? String(r.source2) : '',
   }))
 
   return {
@@ -364,6 +368,33 @@ export async function parseContactAnalysisCsv(blob: Blob, sourceFilename: string
   const csvText = await blob.text()
 
   const parsed = Papa.parse<ContactRecord>(csvText, {
+    header: true,
+    dynamicTyping: true,
+    skipEmptyLines: true,
+  })
+
+  if (parsed.errors.length > 0) {
+    console.warn('CSV parse warnings:', parsed.errors)
+  }
+
+  return {
+    records: parsed.data,
+    columns: parsed.meta.fields ?? [],
+    sourceFilename,
+  }
+}
+
+/**
+ * Parses the CSV blob returned directly by POST /tracking/devices
+ * (toolbox/apps/tracking/tracks_analysis.py) — a bare CSV, one row per team
+ * code + IMEI + day. Dates are left as the strings the backend wrote
+ * (analysis_date is YYYY-MM-DD); utils/deviceTrackingAggregate.ts normalises
+ * them. An empty result parses to zero records.
+ */
+export async function parseDeviceTrackingCsv(blob: Blob, sourceFilename: string): Promise<ParsedDeviceTrackingResult> {
+  const csvText = await blob.text()
+
+  const parsed = Papa.parse<DeviceTrackingRecord>(csvText, {
     header: true,
     dynamicTyping: true,
     skipEmptyLines: true,

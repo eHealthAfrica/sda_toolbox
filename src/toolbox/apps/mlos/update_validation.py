@@ -1,5 +1,5 @@
-from fastapi.responses import FileResponse
 from fastapi import APIRouter, UploadFile
+from starlette.concurrency import run_in_threadpool
 from tqdm import tqdm
 import pandas as pd
 import openpyxl
@@ -12,8 +12,18 @@ from toolbox.exceptions import FileNotFound
 from toolbox.mlos.validation import update
 from toolbox.models import Policy
 from toolbox.tools import generate_output_name
+from toolbox.utils.offload import run_heavy
+from toolbox.utils.tempfiles import afile_response
 
 router = APIRouter()
+
+
+def read_sheet_names(files: list[str]) -> dict[str, list[str]]:
+    """Opening each workbook to list its sheets is slow for big files, so this runs in a worker thread."""
+    return {
+        workbook: openpyxl.load_workbook(workbook).sheetnames
+        for workbook in tqdm(files, desc='loading excel workbooks')
+    }
 
 
 async def process_validated_data(validated_data_files: list[UploadFile]|UploadFile):
@@ -26,10 +36,7 @@ async def process_validated_data(validated_data_files: list[UploadFile]|UploadFi
         with tempfile.TemporaryDirectory() as temp_dir:
             saved_files = [await ESRIHandler.save_uploaded_file(file, temp_dir) for file in excel_files]
 
-            excel_map: dict[UploadFile, list[str]] = {
-                lga_file: openpyxl.load_workbook(lga_file).sheetnames
-                for lga_file in tqdm(saved_files, desc='loading excel workbooks')
-            }
+            excel_map: dict[str, list[str]] = await run_in_threadpool(read_sheet_names, saved_files)
 
             for file, sheet_names in tqdm(excel_map.items(), desc='Reading Workbooks'):
                 excel_datasets = [
@@ -45,9 +52,11 @@ async def process_validated_data(validated_data_files: list[UploadFile]|UploadFi
     if not all_datasets:
         raise FileNotFound('No files found', 'No Compatible Validation Dataset files were uploaded')
 
-    all_datasets = [common_transformations(dataset) for dataset in all_datasets]
-    validated_dataset = pd.concat(all_datasets, ignore_index=True)
-    return validated_dataset
+    def combine() -> pd.DataFrame:
+        transformed = [common_transformations(dataset) for dataset in all_datasets]
+        return pd.concat(transformed, ignore_index=True)
+
+    return await run_heavy(combine)
 
 
 @router.patch('/mlos/validation',  tags=['MLoS'])
@@ -71,17 +80,12 @@ async def update_validation_data(
     validation_dataset = await process_validated_data(lga_validation_files)
     mlos_data = await read_dataset(mlos_file)
     mlos_cols = [col for col in mlos_data.columns]
-    updated_mlos = update.update_mlos(mlos_data, validation_dataset, purpose)
-    updated_mlos = updated_mlos.loc[:, mlos_cols]
+    def update_records() -> pd.DataFrame:
+        updated = update.update_mlos(mlos_data, validation_dataset, purpose)
+        return updated.loc[:, mlos_cols]
 
-    temp_file = tempfile.NamedTemporaryFile(suffix='.csv', delete=False)
-    updated_mlos.to_csv(temp_file.name, index=False)
+    updated_mlos = await run_heavy(update_records)
 
     save_name = generate_output_name(mlos_file.filename, 'csv', 'updated')
-
-    return FileResponse(
-        temp_file.name,
-        filename=save_name,
-        media_type='text/csv'
-    )
+    return await afile_response(lambda path: updated_mlos.to_csv(path, index=False), '.csv', 'text/csv', save_name)
     

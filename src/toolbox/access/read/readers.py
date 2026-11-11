@@ -8,6 +8,7 @@ import psycopg2
 import pandas as pd
 import geopandas as gpd
 from fastapi import UploadFile
+from starlette.concurrency import run_in_threadpool
 from functools import cached_property
 from sqlalchemy import create_engine, text
 from pandas.errors import ParserError, ParserWarning
@@ -95,15 +96,20 @@ class ReadTableData:
         if extension not in ['csv', 'xls', 'xlsx']:
             raise FileNotFound('missing file', f'{self.file_path} is not a valid file')
 
-        try:
-            if hasattr(self.file_path, 'filename'):
-                logging.info(f'Reading File: {self.file_path.filename}')
-                read_file = await self.file_path.read()
-                content = io.BytesIO(read_file)
-            else:
-                logging.info(f'Reading File: {self.file_path}')
-                content = self.file_path
+        if hasattr(self.file_path, 'filename'):
+            logging.info(f'Reading File: {self.file_path.filename}')
+            read_file = await self.file_path.read()
+            content = io.BytesIO(read_file)
+        else:
+            logging.info(f'Reading File: {self.file_path}')
+            content = self.file_path
 
+        # Parsing is CPU-bound pandas work. In a worker thread it no longer freezes every other
+        # request (health checks included) while a large file is read (hardening H7).
+        return await run_in_threadpool(self._parse, content, extension, sheet_name)
+
+    def _parse(self, content: Any, extension: str, sheet_name: str | int) -> pd.DataFrame | gpd.GeoDataFrame:
+        try:
             if extension == 'csv':
                 logging.info('Reading CSV File')
                 data = pd.read_csv(content)
@@ -118,6 +124,8 @@ class ReadTableData:
 
         except (ParserError, ParserWarning) as e:
             logging.warning(f'Error: {e}. Attempting Alternate Solution...')
+            if hasattr(content, 'seek'):
+                content.seek(0)  # the failed attempt already consumed the upload; read it again from the start
             data = self.read_data_from_csv(content, self.has_coord) # noqa
 
         if not self.has_coord:
@@ -164,9 +172,9 @@ class ReadDBData(Reader):
 
         logging.info(f'Reading Database Table: {self.db_table}')
 
-        query = text(query)
         with self.engine.connect() as conn:
             if self.is_spatial:
+                query = text(query)
                 data: gpd.GeoDataFrame = gpd.read_postgis(sql=query, con=conn, geom_col=self.geo_col, params=values)
                 data.rename_geometry('geometry', inplace=True) if 'geom' in data.columns else None
 
@@ -174,8 +182,8 @@ class ReadDBData(Reader):
                 data: pd.DataFrame = pd.read_sql(query, self.connect, params=values)
 
             if data.empty:
-                columns = ", ".join([col for col in params.keys()])
-                value_str = ", ".join(val for val in values)
+                columns = ", ".join([col for col in params.keys()]) if params else ""
+                value_str = ", ".join(val for val in values) if params else ""
                 raise NoRecordsFound(
                     'No Records found', f'No Records in for {value_str} in {columns} in {self.db_table} was found')
 
