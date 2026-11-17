@@ -1,4 +1,5 @@
 import logging
+import re
 from enum import StrEnum
 from typing import Optional
 from dataclasses import dataclass, field
@@ -10,12 +11,14 @@ import geopandas as gpd
 from toolbox.utils import timer
 from toolbox.configs import CONFIG
 from toolbox.access import ReadDBData
-from toolbox.models import State, Policy
+from toolbox.models import Policy
 from toolbox.exceptions import DataError
 from toolbox.spatial_mgr import GeomColumns
 from toolbox.mlos.transformers.common import standardize_attribute_values
 from toolbox.target_area import GeneratorDatasets, preview_settlements
-from toolbox.target_area.run_summary import SkippedState, skip_reason, skipped_summary_text
+from toolbox.target_area.run_summary import (
+    SkippedState, skip_reason, skipped_summary_text, resolve_run_states, planned_match
+)
 from toolbox.target_area.v1.voronoi import build_state_voronoi
 from toolbox.target_area.v1.gridded import build_settlement_grids
 from toolbox.mlos import MLoSAttributes, AdminColumns, detect_unique_admin_field, construct_new_unique
@@ -29,6 +32,8 @@ class TADatasets:
     gridded_ta_subset: Optional[gpd.GeoDataFrame] = None
     states_run: list[str] = field(default_factory=list)                 # states that produced a Target Area
     skipped_states: list[SkippedState] = field(default_factory=list)   # states left out, with the reason
+    planned_requested: Optional[int] = None   # planned settlements that have a code to match on
+    planned_matched: Optional[int] = None     # ...and how many of them were found in the generated target areas
 
 
 class Identifier(StrEnum):
@@ -82,16 +87,74 @@ def compile_datasets(ta_datasets: list[TADatasets], unique_col: str, subset: gpd
         return ta_dataset
 
     logging.info('Subsetting Target Area Datasets For Planned Settlement List')
-    subset_settlements: list = subset[unique_col].unique().tolist()
+    subset_settlements: list = subset[unique_col].dropna().unique().tolist()
     logging.info(f"Planned Settlements with coordinates: {len(subset_settlements):,}")
     subset_voronoi = compiled_voronoi.loc[compiled_voronoi[unique_col].isin(subset_settlements)]
     subset_gridded_ta = compiled_gridded_ta.loc[compiled_gridded_ta[unique_col].isin(subset_settlements)]
     logging.info(f"Found Voronoi Subset Settlements: {len(subset_voronoi):,}")
 
+    # Say so when the planned list did not line up with the master list (different code format, or its states
+    # did not run): the subset is then short or empty and nothing else would tell the user.
+    ta_dataset.planned_requested, ta_dataset.planned_matched = planned_match(subset_settlements, compiled_voronoi[unique_col])
+    if ta_dataset.planned_matched < ta_dataset.planned_requested:
+        logging.warning(
+            f"Only {ta_dataset.planned_matched:,} of {ta_dataset.planned_requested:,} planned settlements were found "
+            f"in the generated target areas (matching on '{unique_col}')")
+
     ta_dataset.voronoi_subset = subset_voronoi
     ta_dataset.gridded_ta_subset = subset_gridded_ta
 
     return ta_dataset
+
+
+def _plain(name: object) -> str:
+    return re.sub(r'[\s_\-]+', '', str(name)).lower()
+
+
+def prepare_planned_list(planned: Optional[gpd.GeoDataFrame], unique_col: str, unique_code: str,
+                         uuid_mode: bool) -> Optional[gpd.GeoDataFrame]:
+    """Give the planned settlement list the column the master list is matched on, or stop with a message.
+
+    The planned list is matched to the generated areas by `unique_col` (the GUID with the UUID identifier,
+    otherwise the unique code). It used to be indexed by that name only after every state had been generated,
+    so a list without the column failed at the very end with a bare KeyError, and a list whose codes were written
+    differently matched nothing without a word. Now:
+
+      * a column that differs only by case, spaces, underscores or dashes is used as it is;
+      * with the UUID identifier a list without the GUID column is refused up front;
+      * otherwise the code is taken from a column the list already has as its unique code, or built from its
+        state / LGA / ward / settlement names the same way the master list's is.
+
+    Whether the codes then actually line up is reported after generation (see compile_datasets).
+    """
+    if planned is None or unique_col in planned.columns:
+        return planned
+
+    same = next((col for col in planned.columns if _plain(col) == _plain(unique_col)), None)
+    if same is not None:
+        planned = planned.copy()
+        planned[unique_col] = planned[same]
+        return planned
+
+    columns = ', '.join(str(col) for col in list(planned.columns)[:30])
+    if uuid_mode:
+        raise DataError(
+            'Planned List',
+            f"The planned settlement list has no '{unique_col}' column, which is how it is matched to the master "
+            f"list with the UUID identifier. Columns found: {columns}.")
+
+    own = detect_unique_admin_field(planned)
+    planned = planned.copy()
+    if own:
+        planned[unique_col] = planned[own]
+        return planned
+    try:
+        return construct_new_unique(planned, unique_col)
+    except DataError as error:
+        raise DataError(
+            'Planned List',
+            f"The planned settlement list has no '{unique_col}' column and one could not be built from its "
+            f"state, LGA, ward and settlement columns ({getattr(error, 'details', error)}). Columns found: {columns}.")
 
 
 @timer(display=True)
@@ -124,8 +187,8 @@ def generate_settlement_target_area(settlements: gpd.GeoDataFrame, planned_list:
         unique_code: str = 'unique_code'
         settlements = construct_new_unique(settlements, unique_code)                                                         # noqa
 
-    settlements = standardize_attribute_values(
-        settlements, [admin.state, admin.lga, admin.ward, admin.settlement], unique_code)
+    # settlements = standardize_attribute_values(
+    #     settlements, [admin.state, admin.lga, admin.ward, admin.settlement], unique_code)
 
     settlements: gpd.GeoDataFrame = settlements.loc[settlements.geometry.y.notna()]                                          # noqa
     settlements.to_crs(CONFIG['PRJ_EPSG'], inplace=True)
@@ -139,9 +202,15 @@ def generate_settlement_target_area(settlements: gpd.GeoDataFrame, planned_list:
         mlos.numeric_attributes.number_of_household, mlos.preset_attributes.accessibility_status                            # noqa
     ]
 
+    # Stop now, before any database layer is read, if the planned list cannot be matched.
+    planned_list = prepare_planned_list(planned_list, unique_col, unique_code, unique_column == Identifier.uuid)
+
     table_ds: dict[str, str] = CONFIG['DATASETS']
-    states: list[str] = settlements[admin.state].str.title().unique().tolist()
-    state_info: dict[str, str] = {state: State[state].state_code for state in states}
+    # A state that is blank, misspelled or has no code is skipped with a reason; it no longer crashes the run.
+    state_info, skipped_states = resolve_run_states(settlements[admin.state])
+    if not state_info:
+        raise DataError('Failed', f'No TA Datasets were generated. {skipped_summary_text(skipped_states)}'.strip())
+    states: list[str] = list(state_info)
 
     print(f"Fetching Database Layers for {len(states)} States: {', '.join(state_info.keys())} State(s)....")
     logging.info(f"Fetching Database Layers for {', '.join(state_info.keys())} State(s)....")
@@ -152,7 +221,6 @@ def generate_settlement_target_area(settlements: gpd.GeoDataFrame, planned_list:
     print("Starting Operations")
     state_ta_datasets: list[TADatasets] = []
     states_run: list[str] = []
-    skipped_states: list[SkippedState] = []
     for state_name, state_code in tqdm(state_info.items(), desc='Generating TA'):
         try:
             logging.info(f"Generating settlement target area datasets for {state_name}")
@@ -196,8 +264,9 @@ def generate_settlement_target_area(settlements: gpd.GeoDataFrame, planned_list:
 if __name__ == '__main__':
     folder = r"C:\Workspace\NEOC\NIPDs\NOV ROUND\TA"
     from toolbox.spatial_mgr import  convert_to_geodata
-    settlement_df = pd.read_excel(fr"{folder}\Target Area MLoS Settlements.xlsx")
+    settlement_df = pd.read_csv(fr"C:\Users\enyinnaya.nwaiwu\Downloads\For_TA_Generation.csv")
     planned_settlement_df =  pd.read_excel(fr"{folder}\Target Area Planned Settlements.xlsx")
+    settlement_df = settlement_df.loc[settlement_df['state_name']=='Kebbi']
 
     settlements_data = convert_to_geodata(settlement_df, GeomColumns('latitude', 'longitude'))
     planned_settlements = convert_to_geodata(planned_settlement_df, GeomColumns('latitude', 'longitude'))

@@ -1,5 +1,5 @@
 {
-  "_about": "Checks run by scripts/canary.py. 'platform' checks need no files. Tool checks ship disabled: build the fixture files under tests/fixtures/canary/<tool>/ (scripts/make_canary_fixture.py helps), run 'python scripts/canary.py --tool <name>' until it passes, then set enabled to true. Replace every REPLACE_ME value first.",
+  "_about": "Checks run by scripts/canary.py. 'platform' checks need no files. Tool checks run only when enabled; each was enabled after 'python scripts/canary.py --tool <name>' passed against the real backend. To add one: build its fixture under tests/fixtures/canary/<tool>/ (scripts/make_canary_fixture.py helps), run it with --tool until it passes, then set enabled to true. The fixtures here were built from the November 2026 SNIPDs files for Tureta LGA, Sokoto (see docs/runbooks/canary-failed.md to rebuild them).",
   "checks": [
     {
       "name": "platform_health",
@@ -18,10 +18,10 @@
     },
     {
       "name": "gts_device_tracking",
-      "enabled": false,
+      "enabled": true,
       "method": "POST",
       "path": "/tracking/devices",
-      "query": { "activity_code": "REPLACE_ME" },
+      "query": { "activity_code": "SNIPDS" },
       "files": { "tracks_file": "gts_device_tracking/tracks.csv" },
       "timeout": 120,
       "expect": {
@@ -34,12 +34,12 @@
     },
     {
       "name": "reach",
-      "enabled": false,
+      "enabled": true,
       "method": "POST",
       "path": "/validation",
       "files": {
         "planned_settlements": "reach/planned_settlements.xlsx",
-        "data_sources": "reach/data_sources.zip",
+        "data_sources": "reach/data_sources.xlsx",
         "tracks": "reach/tracks.csv"
       },
       "timeout": 120,
@@ -47,7 +47,7 @@
     },
     {
       "name": "h2h",
-      "enabled": false,
+      "enabled": true,
       "method": "POST",
       "path": "/tracking/gridded",
       "files": { "tracks_path": "h2h/tracks.csv", "dip_file": "h2h/dip.xlsx" },

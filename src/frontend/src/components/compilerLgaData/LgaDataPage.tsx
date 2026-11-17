@@ -13,14 +13,12 @@ interface CombinedResult {
   columns: string[]
 }
 
-// Compiler · Combine LGA Data. POST /compiler/lga_data is expected to fail
-// against realistic input — see the top-of-file comment in
-// types/compilerLgaData.ts for the three independent, code-confirmed
-// reasons. This page still makes the real call rather than faking success;
-// what it adds is (a) a client-side preflight that shows real per-dataset
-// counts the moment a file is chosen, regardless of what the backend call
-// does, and (b) an honest, specific explanation when that call fails,
-// instead of a generic "request failed" message.
+// Compiler · Combine LGA Data. Makes the real call to POST /compiler/lga_data
+// (types/compilerLgaData.ts has notes on the route's known limits). On top of
+// that it adds (a) a client-side preflight that shows real per-dataset counts
+// the moment a file is chosen, regardless of what the backend call does, and
+// (b) the server's own message when the call fails, instead of a generic
+// "request failed" one.
 export default function LgaDataPage() {
   const [preflight, setPreflight] = useState<LgaDataPreflight | null>(null)
   const [preflighting, setPreflighting] = useState(false)
@@ -76,46 +74,6 @@ export default function LgaDataPage() {
     <div>
       <LgaDataForm onFileSelected={handleFileSelected} onSubmit={handleSubmit} submitting={submitting} />
 
-      <div
-        style={{
-          background: '#fbe6e6',
-          border: '1px solid #f0b8b8',
-          borderRadius: 'var(--radius-lg)',
-          padding: '14px 16px',
-          marginBottom: 16,
-          fontSize: 12,
-          lineHeight: 1.65,
-          color: '#7a2020',
-        }}
-      >
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: '#7a2020' }}>
-          ⚠ As written, this route cannot complete against real per-LGA data — three independent breakages
-        </div>
-        <ol style={{ margin: '8px 0 0', paddingLeft: 18 }}>
-          <li style={{ marginBottom: 8 }}>
-            <b>Zip nesting is one level deeper than the route ever unzips.</b> A real per-LGA export is a zip of
-            per-LGA <i>zips</i>, each containing per-ward CSVs — but <code>extract_and_find_file</code> only calls{' '}
-            <code>zipfile.extractall</code> once, then globs for the target extension. It finds zero files and
-            returns <code>None</code>.
-          </li>
-          <li style={{ marginBottom: 8 }}>
-            <b>
-              That <code>None</code> immediately crashes the next line
-            </b>{' '}
-            — <code>get_excel_sheet_names(None)</code> tries to iterate <code>None</code> as a list of file paths.
-          </li>
-          <li style={{ marginBottom: 8 }}>
-            <b>Even past that, the format doesn't match.</b> <code>get_excel_sheet_names</code> requires genuine{' '}
-            <code>.xlsx</code> files; real per-LGA exports are plain <code>.csv</code>.
-          </li>
-          <li style={{ marginBottom: 0 }}>
-            <b>Even with a perfectly flat, valid .xlsx zip, the route fails on its own last line</b> — it writes the
-            merged CSV to one tempfile, then serves back a completely different, never-written path built by{' '}
-            <code>generate_output_name</code>.
-          </li>
-        </ol>
-      </div>
-
       {preflighting && (
         <div style={{ fontSize: 12.5, color: 'var(--color-text-muted)', padding: '12px 0', textAlign: 'center' }}>
           Scanning archive…
@@ -158,7 +116,6 @@ export default function LgaDataPage() {
               {typeof error.detail === 'string' ? error.detail : JSON.stringify(error.detail)}
             </div>
           )}
-          <div style={{ marginTop: 8 }}>This is expected — see the caveat above for the three known reasons why.</div>
         </div>
       )}
 
@@ -180,9 +137,8 @@ export default function LgaDataPage() {
             color: '#14532d',
           }}
         >
-          <div style={{ fontWeight: 700, marginBottom: 4 }}>✓ The route actually returned something this time</div>
-          {result.recordCount.toLocaleString()} records across {result.columns.length} columns — worth checking
-          whether the backend was fixed, or this input happened to sidestep all three known issues.
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>✓ Combined</div>
+          {result.recordCount.toLocaleString()} records across {result.columns.length} columns.
         </div>
       )}
     </div>

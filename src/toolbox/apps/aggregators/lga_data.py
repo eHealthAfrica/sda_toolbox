@@ -34,6 +34,7 @@ async def combine_lga_data(lga_file: UploadFile, file_extension: Optional[Extens
     -------
         UploadFile
     """
+    raise NotImplementedError('Tool is under review and development')
     upload_extension = lga_file.filename.split(".")[-1]
     acceptable_extensions = ['xls', 'xlsx', 'zip', 'csv']
     if upload_extension not in acceptable_extensions:

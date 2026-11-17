@@ -1,21 +1,33 @@
 <#
 .SYNOPSIS
-  Registers (or removes) the daily SDA Toolbox canary in Windows Task Scheduler.
+  Registers (or removes) the SDA Toolbox canary in Windows Task Scheduler. Weekly by default.
 
 .DESCRIPTION
-  Creates one scheduled task that runs scripts\canary.py every day and appends
-  its output to logs\canary\scheduler.log. The canary posts to Slack itself
-  when a check fails (see docs\runbooks\canary-failed.md), so the task only
-  needs to run it.
+  Creates one scheduled task that runs scripts\canary.py once a week (on
+  Monday at 07:00 unless you say otherwise) and appends its output to
+  logs\canary\scheduler.log. The canary posts to the Slack notification channel
+  itself when a check fails: it uses the same ALERT_WEBHOOK_URL in .env as the
+  backend's own alerts (see docs\runbooks\canary-failed.md), so the task only
+  needs to run it. A run where everything passes is silent; look in the log
+  file to see that it ran.
 
   No administrator rights are needed. The task runs as you, only while you are
   signed in (so the backend, which lives in Docker Desktop on this PC, is
   normally up). If the PC was off at the scheduled time, the run happens as
   soon as it is available again.
 
+  Once registered, the script prints the next run time that Task Scheduler
+  worked out; if it cannot, it says so instead of reporting success.
+
   Before registering, the script checks that a usable Python (3.10 or newer) is
-  found, that canary.py starts, and that CANARY_TOKEN is set in .env (it only
-  checks that the value is there; it never prints it).
+  found, that canary.py starts, and that CANARY_TOKEN and ALERT_WEBHOOK_URL are
+  set in .env (it only checks that a value is there; it never prints it).
+
+.PARAMETER Schedule
+  Weekly (default) or Daily.
+
+.PARAMETER DayOfWeek
+  Day of the week for a Weekly schedule. Default Monday.
 
 .PARAMETER Time
   Time of day to run, 24-hour HH:mm. Default 07:00.
@@ -36,13 +48,20 @@
   powershell -ExecutionPolicy Bypass -File scripts\schedule_canary.ps1 -RunNow
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File scripts\schedule_canary.ps1 -Time 06:30
+  powershell -ExecutionPolicy Bypass -File scripts\schedule_canary.ps1 -DayOfWeek Wednesday -Time 06:30
+
+.EXAMPLE
+  powershell -ExecutionPolicy Bypass -File scripts\schedule_canary.ps1 -Schedule Daily
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\schedule_canary.ps1 -Remove
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('Weekly', 'Daily')]
+    [string]$Schedule = 'Weekly',
+    [ValidateSet('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')]
+    [string]$DayOfWeek = 'Monday',
     [string]$Time = '07:00',
     [string]$TaskName = 'SDA Toolbox Canary',
     [string]$PythonPath,
@@ -111,12 +130,21 @@ if (-not $tokenSet) {
     Write-Warning 'CANARY_TOKEN is not set in .env. The canary will exit with an error until it is (add a long random value, restart the app container, then run again).'
 }
 
+$webhookSet = (Test-Path $envFile) -and (Select-String -Path $envFile -Pattern '^\s*ALERT_WEBHOOK_URL\s*=\s*\S+' -Quiet)
+if (-not $webhookSet) {
+    Write-Warning 'ALERT_WEBHOOK_URL is not set in .env, so a failed check will be logged but nothing will be posted to Slack. Use the same incoming-webhook URL the backend alerts use.'
+}
+
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 # cmd.exe so the output can be appended to a log file; the outer quotes keep cmd from mangling the inner ones.
 $inner = '"{0}" "{1}" >> "{2}" 2>&1' -f $python, $canary, $logFile
 $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "{0}"' -f $inner) -WorkingDirectory $repo
-$trigger = New-ScheduledTaskTrigger -Daily -At $at
+if ($Schedule -eq 'Weekly') {
+    $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $DayOfWeek -At $at
+} else {
+    $trigger = New-ScheduledTaskTrigger -Daily -At $at
+}
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 
@@ -124,7 +152,17 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
     -Description 'Runs the SDA Toolbox canary (scripts\canary.py) and posts to Slack if a check fails.' | Out-Null
 
 Write-Host ''
-Write-Host "Registered '$TaskName': every day at $Time."
+if ($Schedule -eq 'Weekly') {
+    Write-Host "Registered '$TaskName': weekly, on $DayOfWeek at $Time."
+} else {
+    Write-Host "Registered '$TaskName': every day at $Time."
+}
+$next = (Get-ScheduledTaskInfo -TaskName $TaskName).NextRunTime
+if ($next -and $next.Year -ge 2000) {
+    Write-Host ("Next run: {0:yyyy-MM-dd HH:mm}" -f $next)
+} else {
+    Write-Warning 'Task Scheduler did not report a next run time, so the schedule may not have been accepted. Open Task Scheduler, find the task and check its Triggers tab.'
+}
 Write-Host "Output is appended to: $logFile"
 Write-Host 'Change or remove it later in Task Scheduler, or run this script again (-Time, -Remove).'
 

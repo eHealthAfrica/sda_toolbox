@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ApiError, fetchFailedJobs, fetchIncidents, fetchJobsStats, fetchReady } from '../../api/client'
+import { ApiError, fetchFailedJobs, fetchIncidents, fetchJobsStats, fetchReady, fetchReliabilityReport } from '../../api/client'
 import type { JobRow } from '../../types/jobs'
 import type { Incident, JobsStats, ReadyReport, StatsWindow } from '../../types/reliability'
 import { filterByTool, formatPct } from '../../utils/reliability'
@@ -11,7 +11,7 @@ import ReliabilityKpis from './ReliabilityKpis'
 import SuccessTrendChart from './SuccessTrendChart'
 import ToolReliabilityTable from './ToolReliabilityTable'
 import TopCausesTable from './TopCausesTable'
-import { Card, EmptyNote, Segmented, buttonStyle } from './reliabilityShared'
+import { Card, EmptyNote, Segmented, buttonStyle, primaryButtonStyle } from './reliabilityShared'
 
 interface ReliabilityPageProps {
   // App.tsx keeps every page mounted; polling only runs while this one is on
@@ -65,6 +65,8 @@ export default function ReliabilityPage({ active }: ReliabilityPageProps) {
   const [selectedTool, setSelectedTool] = useState<string | null>(null)
   const [updatedAt, setUpdatedAt] = useState<number | null>(null)
   const [reloadTick, setReloadTick] = useState(0)
+  const [reportBusy, setReportBusy] = useState(false)
+  const [reportError, setReportError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!active) return
@@ -130,6 +132,27 @@ export default function ReliabilityPage({ active }: ReliabilityPageProps) {
     setReloadTick((n) => n + 1)
   }
 
+  // Downloads the PDF for the window picked above (30 days unless changed).
+  async function handleDownloadReport() {
+    setReportBusy(true)
+    setReportError(null)
+    try {
+      const { blob, fileName } = await fetchReliabilityReport(windowKey)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = fileName
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 10_000)
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Could not download the report.')
+    } finally {
+      setReportBusy(false)
+    }
+  }
+
   const selectedLabel = selectedTool ? (toolLabels[selectedTool] ?? selectedTool) : null
 
   return (
@@ -144,6 +167,15 @@ export default function ReliabilityPage({ active }: ReliabilityPageProps) {
         <Segmented<StatsWindow> label="Time window" value={windowKey} options={WINDOW_OPTIONS} onChange={setWindowKey} />
         <button type="button" onClick={() => setReloadTick((n) => n + 1)} style={buttonStyle}>
           Refresh
+        </button>
+        <button
+          type="button"
+          onClick={() => void handleDownloadReport()}
+          disabled={reportBusy || statsState === 'unavailable'}
+          title={`Download a PDF report for the last ${WINDOW_OPTIONS.find((o) => o.value === windowKey)?.label ?? windowKey}`}
+          style={{ ...primaryButtonStyle, opacity: reportBusy ? 0.6 : 1, cursor: reportBusy ? 'progress' : 'pointer' }}
+        >
+          {reportBusy ? 'Preparing report…' : '⬇ Download report (PDF)'}
         </button>
         {selectedLabel && (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, background: '#eaf1fb', color: 'var(--color-primary)', padding: '4px 10px', borderRadius: 16, fontWeight: 600 }}>
@@ -163,6 +195,12 @@ export default function ReliabilityPage({ active }: ReliabilityPageProps) {
           {updatedAt ? `Updated ${new Date(updatedAt).toLocaleTimeString()}` : 'Loading…'}
         </span>
       </div>
+
+      {reportError && (
+        <div role="alert" style={{ fontSize: 12.5, color: 'var(--color-critical)' }}>
+          Could not download the report: {reportError}
+        </div>
+      )}
 
       {statsState === 'unavailable' && <SetupCard />}
 

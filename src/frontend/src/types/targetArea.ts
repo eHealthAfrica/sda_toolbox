@@ -88,9 +88,18 @@ export interface SkippedState {
   reason: string
 }
 
+// How many of the planned settlements (when a planned list was uploaded) were found in the generated target
+// areas: `requested` is the planned rows that have a code to match on, `matched` those found.
+export interface PlannedMatch {
+  requested: number
+  matched: number
+}
+
 export interface TargetAreaRunSummary {
   statesRun: string[]
   skipped: SkippedState[]
+  /** Null when no planned list was uploaded, or an older backend did not say. */
+  planned: PlannedMatch | null
 }
 
 export interface TargetAreaResponse {

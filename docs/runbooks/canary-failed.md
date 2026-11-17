@@ -1,12 +1,12 @@
 # Canary failed
 
-**Applies to:** the daily canary run (`scripts\canary.py`, scheduled in Windows Task Scheduler); alert A5  **Owner:** to assign  **Last tested:** not yet (draft written 2026-10-30)
+**Applies to:** the weekly canary run (`scripts\canary.py`, scheduled in Windows Task Scheduler); alert A5  **Owner:** to assign  **Last tested:** not yet (draft written 2026-10-30)
 
 The canary posts a small request to the running backend and checks the answer. Three checks need no files (`platform_health`, `platform_ready`, `database_lookup`); the tool checks (`gts_device_tracking`, `reach`, `h2h`) run only once their fixture files exist and they are enabled in `tests\fixtures\canary\manifest.json`. A check that cannot run counts as failed, never as a pass.
 
 ## Schedule
 
-The run is a Windows Task Scheduler task named "SDA Toolbox Canary" (daily, 07:00 by default), created by `scripts\schedule_canary.ps1`; its output is appended to `logs\canary\scheduler.log`. If no alert ever arrives, check that the task exists, that its last result is 0, and that the PC was signed in at that time (the task runs only while you are signed in).
+The run is a Windows Task Scheduler task named "SDA Toolbox Canary" (weekly, on Monday at 07:00 by default; `-DayOfWeek`, `-Time` and `-Schedule Daily` change that), created by `scripts\schedule_canary.ps1`; its output is appended to `logs\canary\scheduler.log`. If no alert ever arrives, check that the task exists, that its last result is 0, and that the PC was signed in at that time (the task runs only while you are signed in).
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\schedule_canary.ps1 -RunNow    # create or update it, then run once
@@ -47,11 +47,22 @@ Decide what failed:
 ## Fix
 
 - Fix the tool and add a regression test named after the incident.
-- If the fixture is out of date, rebuild it from a recent real file with `python scripts\make_canary_fixture.py tracks --src <file> --out tests\fixtures\canary\<tool>\...` (or `head` for a settlement list), check it contains nothing sensitive, and write in the commit message what changed and why. Do not loosen the canary's assertion just to make it pass.
+- If the fixture is out of date (for example a new campaign changed a column or a team-code format), rebuild all three tool fixtures together from the current campaign's files. They are one small LGA, so the tracks, the settlement list and the data-source rows agree with each other:
+
+  ```powershell
+  python scripts\make_canary_fixture.py areas --tracks <tracks.csv> --settlements <settlement list> --sources <data sources.xlsx>
+  python scripts\make_canary_fixture.py area  --tracks <tracks.csv> --settlements <settlement list> --sources <data sources.xlsx> --state <State> --lga <LGA>
+  ```
+
+  `areas` lists LGAs that have correctly coded teams and rows in every data source (REACH rejects a source with no rows for the planned state). `area` writes `tests\fixtures\canary\...` and prints the `activity_code` to put in the manifest. It replaces device ids in the tracks with stand-ins. Open the files and check they contain nothing sensitive, then write in the commit message what changed and why. For a single file, `tracks` and `head` still work. Do not loosen the canary's assertion just to make it pass.
+
+  The shipped fixtures were built from the November 2026 SNIPDs files: Tureta LGA, Sokoto State, activity code `SNIPDS`.
 
 ## Verify
 
-Rerun `python scripts\canary.py` and see it pass. Canary runs count towards closing incidents, so the incident resolves after two clean runs, and the channel gets a "resolved after ..." message.
+Rerun `python scripts\canary.py` and see it pass. Canary runs count towards closing incidents, so the incident resolves after two clean runs, and the channel gets a "resolved after ..." message. The scheduled run is only weekly, so run it by hand twice after a fix instead of waiting two weeks for the incident to close.
+
+Because the run is weekly, a platform outage can go unnoticed by the canary for days; the backend's own alerts (health, readiness, failure rate) are what catch those in between. A second failed run is a week after the first, so "two consecutive failures" (sev1) means a problem that survived a whole week.
 
 ## Escalate
 

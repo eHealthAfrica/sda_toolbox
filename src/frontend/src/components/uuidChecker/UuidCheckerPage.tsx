@@ -26,9 +26,9 @@ function ModeTab({ active, onClick, children }: { active: boolean; onClick: () =
 }
 
 // GET /uuid_check + POST /uuid_batch_checker (toolbox/apps/db_access/uuid_checker.py)
-// — both check settlement eha_guids against the settlements table; single
-// checks one at a time, batch takes a file/paste of many and adds a CSV
-// export of the results.
+// — both report whether a UUID can be assigned to a new settlement (green tick)
+// or not (red cross, with the reason); single checks one at a time, batch takes
+// a file/paste of many and adds a CSV export of the results.
 export default function UuidCheckerPage() {
   const [mode, setMode] = useState<CheckMode>('single')
 

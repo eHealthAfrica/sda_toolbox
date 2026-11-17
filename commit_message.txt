@@ -1,0 +1,51 @@
+Add Target Area run summary, harden TA voronoi, disable upload limit, fix duplicate checker
+
+Target Area generator
+- Report which states ran and which were skipped, with the reason: new
+  target_area/run_summary.py, recorded in generate.py, sent in the
+  X-TA-Summary response header (exposed via CORS in sda_toolbox.py).
+- Frontend: new "States" card on the Target Area page (N of M ran, chips for
+  states run, line list of states not run with reasons). submitGenerateTA now
+  returns { blob, summary }; new types and utils/targetAreaRun.ts parser.
+- When every state is skipped, the error now carries each state's reason
+  instead of a generic "No TA Datasets were generated".
+- Per-state log line now records the reason and traceback.
+- Voronoi: four anchor points close unbounded edge cells; drop duplicate
+  settlements after the ward join; snap-distance extent check with
+  own-point distance; area recalculated after the grid overlay so slivers
+  are filtered correctly; state names compared case-insensitively;
+  attribute values standardised before generation.
+- Fallback: overlapping buffers are split by their own Voronoi cells
+  (create_voronoi gains min_margin and accepts 2+ points), then cut to each
+  settlement's own state cell so fallbacks no longer overlap real cells.
+- preview_settlements: reports counts and example ids for shared locations,
+  duplicated unique codes/GUIDs and missing GUIDs; blank ids are not treated
+  as duplicates of each other. Fixes the earlier iteration bug that raised
+  ValueError.
+- Not yet verified against a real state run (no geopandas in the dev
+  sandbox). Run one state and check the extent-piece and fallback counts.
+
+Upload limit
+- All upload size checks disabled by default (UPLOAD_LIMIT_ENABLED and
+  frontend UPLOAD_LIMIT_CHECK_ENABLED switches re-enable them);
+  /upload-limit endpoint and tests updated.
+
+Duplicate checker
+- Cross-reference mode now returns source1/source2 for every pair and
+  de-duplicates reverse pairs; frontend types, parser, aggregation and
+  pairs table updated. Tests added.
+
+Checkout, dashboard and device tracking
+- Checkout sync_db/tools and the Checkout page (form, result card,
+  indicators, summary header) updated.
+- Dashboard indicators and device tracking page rebuilt (heat grid, KPI
+  grid, charts, filters, line-list, Excel export).
+- Geometry-related updates to the DIP/DMP template and reporter modules.
+
+Tests
+- tests/test_ta_run_summary.py (new), test_duplicate_deep_search_sources.py
+  (new), test_upload_limit*.py, test_reliability.py, test_checkout_sync.py,
+  test_h7_routes.py, test_duplicate_checker_route.py updated.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_012CSaY5mgRCJwThBmowsRw1

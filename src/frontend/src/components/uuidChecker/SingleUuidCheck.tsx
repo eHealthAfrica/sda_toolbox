@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { ApiError, checkUuid } from '../../api/client'
 import type { UuidCheckResult } from '../../types/uuidChecker'
 import { isUuidShaped } from '../../utils/uuidFile'
-import { UUID_EXISTS_COLORS } from '../../utils/colors'
+import { UUID_AVAILABILITY_COLORS } from '../../utils/colors'
 import { useJobTracker } from '../../state/jobTracker'
 import UuidResultTable from './UuidResultTable'
 
@@ -19,10 +19,28 @@ const inputStyle = {
 const EXAMPLE_UUID = '123e4567-e89b-12d3-a456-426614174000'
 const HISTORY_LIMIT = 200
 
-// GET /uuid_check — a single settlement's eha_guid, checked one at a time
-// against the settlements table. Keeps a running (session-only) history so
-// repeated lookups during a review session don't disappear the moment the
-// next one runs.
+function availabilityHeadline(result: UuidCheckResult): string {
+  if (result.is_available === 'Available') return 'Available — can be assigned to a new settlement'
+  return result.reason === 'Reserved' ? 'Not available — reserved' : 'Not available — already in the MLoS'
+}
+
+function availabilityDetail(result: UuidCheckResult): string {
+  if (result.is_available === 'Available') {
+    return 'This UUID is now held for you. Checking it again will show it as reserved.'
+  }
+  return result.reason === 'Reserved'
+    ? 'An earlier check handed this UUID out and it is not in the MLoS yet.'
+    : 'A settlement in the MLoS already uses this UUID.'
+}
+
+// GET /uuid_check — checks whether a UUID can be assigned to a new settlement:
+// a green tick when it can, a red cross (with the reason) when it can't.
+// Keeps a running (session-only) history so repeated lookups during a review
+// session don't disappear the moment the next one runs.
+//
+// Note the backend reserves a UUID the first time it is reported Available, so
+// checking the same one again reports it as Reserved — the result card says so,
+// and the history keeps the latest answer for each UUID.
 export default function SingleUuidCheck() {
   const [uuidInput, setUuidInput] = useState('')
   const [checking, setChecking] = useState(false)
@@ -115,7 +133,7 @@ export default function SingleUuidCheck() {
         <div
           style={{
             background: 'var(--color-surface)',
-            border: `1px solid ${UUID_EXISTS_COLORS[latest.exists]}`,
+            border: `1px solid ${UUID_AVAILABILITY_COLORS[latest.is_available]}`,
             borderRadius: 'var(--radius-lg)',
             boxShadow: 'var(--shadow-sm)',
             padding: '18px 20px',
@@ -127,6 +145,8 @@ export default function SingleUuidCheck() {
           }}
         >
           <span
+            role="img"
+            aria-label={latest.is_available === 'Available' ? 'Available' : 'Not available'}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -134,22 +154,23 @@ export default function SingleUuidCheck() {
               width: 40,
               height: 40,
               borderRadius: '50%',
-              background: UUID_EXISTS_COLORS[latest.exists],
+              background: UUID_AVAILABILITY_COLORS[latest.is_available],
               color: '#fff',
               fontSize: 18,
               fontWeight: 700,
               flexShrink: 0,
             }}
           >
-            {latest.exists === 'EXISTS' ? '✓' : '✕'}
+            {latest.is_available === 'Available' ? '✓' : '✕'}
           </span>
           <div>
             <div style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace', fontSize: 14, fontWeight: 600 }}>
               {latest.uuid}
             </div>
-            <div style={{ fontSize: 13, color: UUID_EXISTS_COLORS[latest.exists], fontWeight: 600, marginTop: 2 }}>
-              {latest.exists === 'EXISTS' ? 'Found in settlements table' : 'Not found in settlements table'}
+            <div style={{ fontSize: 13, color: UUID_AVAILABILITY_COLORS[latest.is_available], fontWeight: 600, marginTop: 2 }}>
+              {availabilityHeadline(latest)}
             </div>
+            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 2 }}>{availabilityDetail(latest)}</div>
           </div>
         </div>
       )}
@@ -158,7 +179,7 @@ export default function SingleUuidCheck() {
 
       {!latest && history.length === 0 && !checking && (
         <div style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>
-          Enter a settlement UUID above to check whether it exists in the settlements table.
+          Enter a UUID above to check whether it can be assigned to a new settlement.
         </div>
       )}
     </div>

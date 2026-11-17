@@ -1,11 +1,17 @@
-// Mirrors toolbox/apps/db_access/uuid_checker.py — Exists enum values are the
-// literal strings the backend serializes ('EXISTS' / 'NOT EXISTS'), not
-// booleans.
-export type ExistsStatus = 'EXISTS' | 'NOT EXISTS'
+// Mirrors toolbox/models/db/access_models.py — the enum values are the literal
+// strings the backend serializes, not booleans.
+//
+// 'Available' means the UUID can be assigned to a new settlement. 'Not Available'
+// means it cannot, and `reason` says why: 'In MLOS' (a settlement already has it)
+// or 'Reserved' (it was handed out by an earlier check and has not reached the
+// MLoS yet). `reason` is null whenever the UUID is available.
+export type AvailabilityStatus = 'Available' | 'Not Available'
+export type UnavailableReason = 'In MLOS' | 'Reserved'
 
 export interface UuidCheckResult {
   uuid: string
-  exists: ExistsStatus
+  is_available: AvailabilityStatus
+  reason: UnavailableReason | null
 }
 
 // Client-side only — a row from an uploaded/pasted batch that isn't shaped

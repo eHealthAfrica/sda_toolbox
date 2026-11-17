@@ -1,18 +1,21 @@
 import io
 import os
 import re
+import sqlite3
 import string
 import zipfile
 import tempfile
 import logging
 from pathlib import Path
-from typing import Literal, Any
+from typing import Literal, Any, Callable, Iterable
 from datetime import datetime
+from functools import wraps
 
 import pandas as pd
 from tqdm import tqdm
 from starlette.concurrency import run_in_threadpool
 
+from toolbox.models.db import Availability, Reasons, UUIDResponse, UUIDResponses
 from toolbox.tools import is_empty
 from toolbox.configs import CONFIG
 from toolbox.reporting import Report
@@ -284,3 +287,99 @@ def get_visitation_col(df: pd.DataFrame):
         return max(cols_idx, key=cols_idx.get) if cols_idx else None
 
     return review()
+
+CACHE_TABLE = 'uuid_reserve'
+UUID_CACHE_DB = '.\\data\\uuid_cache.db'
+
+
+def _open_uuid_cache() -> sqlite3.Connection:
+    """Open the UUID reservation database, creating the table on first use.
+
+    `created_at` is filled in by SQLite when a row is inserted (CURRENT_TIMESTAMP, in UTC)."""
+    db = sqlite3.connect(UUID_CACHE_DB)
+    db.execute(
+        f"CREATE TABLE IF NOT EXISTS {CACHE_TABLE} ("
+        "uuid TEXT PRIMARY KEY, "
+        "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    )
+    return db
+
+
+# SQLite caps how many `?` one statement may carry (999 on older builds), so lookups go in chunks.
+_LOOKUP_CHUNK = 500
+
+
+def search_uuid_cache_many(uuids: Iterable[str]) -> set[str]:
+    """The subset of `uuids` that is reserved. One connection and a few `IN (...)` queries, however many are asked."""
+    wanted = list(dict.fromkeys(uuids))
+    if not wanted:
+        return set()
+    db = _open_uuid_cache()
+    try:
+        found: set[str] = set()
+        for i in range(0, len(wanted), _LOOKUP_CHUNK):
+            chunk = wanted[i:i + _LOOKUP_CHUNK]
+            marks = ', '.join('?' * len(chunk))
+            found.update(row[0] for row in db.execute(f"SELECT uuid FROM {CACHE_TABLE} WHERE uuid IN ({marks})", chunk))
+        return found
+    finally:
+        db.close()
+
+
+def search_uuid_cache(uuid: str) -> bool:
+    return uuid in search_uuid_cache_many([uuid])
+
+
+def reserve_uuids(uuids: Iterable[str]) -> set[str]:
+    """Reserve each UUID and return the ones this call reserved.
+
+    A UUID somebody else reserved first (another request, even a moment ago) is left out of the answer. The
+    check and the insert are one statement (`INSERT OR IGNORE` on the primary key), so two requests for the same
+    new UUID cannot both win. A UUID repeated within `uuids` is reserved once."""
+    mine: set[str] = set()
+    db = _open_uuid_cache()
+    try:
+        with db:  # one transaction: commits on success, rolls back on error
+            for uuid in dict.fromkeys(uuids):
+                if db.execute(f"INSERT OR IGNORE INTO {CACHE_TABLE} (uuid) VALUES (?)", (uuid,)).rowcount == 1:
+                    mine.add(uuid)
+    finally:
+        db.close()
+    return mine
+
+
+def uuid_cache(func: Callable[..., UUIDResponse | UUIDResponses]):
+    """Reserve every UUID the wrapped endpoint reports Available, so it is not handed out twice.
+
+    Works on a single UUIDResponse and on UUIDResponses. If another request reserved one of them first, it is
+    changed to Not Available / Reserved instead of being reported Available twice."""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        result = await func(*args, **kwargs)
+        responses = result.response if isinstance(result, UUIDResponses) else [result]
+        available = [r for r in responses if r.is_available == Availability.AVAILABLE]
+        if not available:
+            return result
+
+        reserved = await run_in_threadpool(reserve_uuids, [str(r.uuid) for r in available])
+        for response in available:
+            if str(response.uuid) not in reserved:
+                response.is_available = Availability.NOT_AVAILABLE
+                response.reason = Reasons.RESERVED
+
+        return result
+
+    return wrapper
+
+
+def clear_uuid_cache() -> int:
+    """Delete every reserved UUID. Returns how many were removed.
+
+    For use once a new MLoS version has been loaded: the reserved UUIDs are in it by then, so
+    the settlements check finds them and the reservations are no longer needed."""
+    db = _open_uuid_cache()
+    try:
+        with db:  # commits on success, rolls back on error
+            return db.execute(f"DELETE FROM {CACHE_TABLE}").rowcount
+    finally:
+        db.close()

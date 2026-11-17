@@ -330,19 +330,42 @@ class ToolChecks(CanaryCase):
         code, _, err = self.run_canary('--tool', 'nope')
         self.assertEqual(code, 2)
 
-    def test_the_shipped_manifest_is_valid_and_safe_by_default(self):
+    def test_the_shipped_manifest_is_valid_and_has_the_tool_checks_on(self):
         data = json.loads(REAL_MANIFEST.read_text())
         names = [c['name'] for c in data['checks']]
         self.assertEqual(names, ['platform_health', 'platform_ready', 'database_lookup',
                                  'gts_device_tracking', 'reach', 'h2h'])
         for c in data['checks']:
             if c['name'] in ('gts_device_tracking', 'reach', 'h2h'):
-                self.assertIs(c['enabled'], False, c['name'])
+                self.assertIs(c['enabled'], True, c['name'])  # each passed against the real backend first
             self.assertTrue(c['path'].startswith('/'))
-        # with the shipped manifest and no fixtures, only the three platform checks run
-        code, out, _ = self.run_canary(manifest=data)
+        # with the tool checks switched off, only the three platform checks run
+        platform_only = {'checks': [dict(c, enabled=False) if 'enabled' in c else c for c in data['checks']]}
+        code, out, _ = self.run_canary(manifest=platform_only)
         self.assertEqual(code, 0, out)
         self.assertIn('3 passed, 0 failed, 3 skipped', out)
+
+    def test_every_fixture_the_manifest_names_ships_and_is_small(self):
+        data = json.loads(REAL_MANIFEST.read_text())
+        self.assertNotIn('REPLACE_ME', REAL_MANIFEST.read_text())
+        for c in data['checks']:
+            for rel in c.get('files', {}).values():
+                path = REAL_MANIFEST.parent / rel
+                self.assertTrue(path.is_file(), f'{c["name"]}: fixture {rel} is missing')
+                self.assertLess(path.stat().st_size, maker.MAX_BYTES, rel)
+        reach = {c['name']: c for c in data['checks']}['reach']
+        self.assertTrue(reach['files']['data_sources'].endswith('.xlsx'))  # the backend reads a workbook or a zip
+
+    def test_shipped_fixtures_hold_no_device_ids_or_result_columns(self):
+        base = REAL_MANIFEST.parent
+        tracks = pd.read_csv(base / 'gts_device_tracking' / 'tracks.csv', dtype=str)
+        self.assertGreater(tracks['Team Code'].nunique(), 1)
+        self.assertTrue((tracks['IMEI'].str.len() == 16).all())
+        for rel in ('h2h/dip.xlsx', 'reach/planned_settlements.xlsx'):
+            plan = pd.read_excel(base / rel)
+            self.assertEqual(plan['State'].nunique(), 1)
+            self.assertFalse([c for c in plan.columns if maker.RESULT_COLUMNS.match(str(c))], rel)
+        self.assertGreaterEqual(len(pd.read_excel(base / 'reach' / 'data_sources.xlsx', sheet_name=None)), 2)
 
 
 class Alerting(CanaryCase):
@@ -491,6 +514,162 @@ class Trimmer(unittest.TestCase):
         code, _, err = self.run_tool('head', '--src', str(big), '--out', str(self.tmp / 'o.csv'), '--max-rows', '6000')
         self.assertEqual(code, 1)
         self.assertIn('larger than 1 MB', err)
+
+
+class AreaFixtures(unittest.TestCase):
+    """`make_canary_fixture.py area` / `areas`: one LGA's tracks, settlement list and data sources that agree."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='area-test-'))
+        # Five settlements in Sokoto/Tureta (around 12.58 N, 5.33 E) and two far away in Kano/Dala.
+        near = [(f'S{i}', 12.58 + i * 0.001, 5.33) for i in range(5)]
+        far = [(f'K{i}', 12.00 + i * 0.001, 8.50) for i in range(2)]
+        rows = []
+        for name, lat, lon in near:
+            rows.append(['Sokoto', 'Tureta', 'Duma', name, lat, lon, 'RES', 'Visited', '1.0', 'Poorly Covered'])
+        for name, lat, lon in far:
+            rows.append(['Kano', 'Dala', 'Ward', name, lat, lon, 'H2H', 'Visited', '1.0', 'Poorly Covered'])
+        self.settlements = self.tmp / 'settlements.csv'
+        pd.DataFrame(rows, columns=['State', 'LGAs', 'Wards', 'Settlements', 'Latitude', 'Longitude',
+                                    'Proposed strategy', 'day_1', 'Coverage', 'Settlement Coverage']
+                     ).assign(unique_code=lambda d: d['State'] + '_' + d['LGAs'] + '_' + d['Wards'] + '_' + d['Settlements'],
+                              day_1_cumm='Visited', time_spent_mins='5'
+                     ).to_csv(self.settlements, index=False)
+
+        def points(team, lat, lon, day=13, n=30, hour=9, speed='0.2', imei='abc123def4567890'):
+            return [[team, imei, f'11/{day:02d}/2026 {hour:02d}:{i % 60:02d}:00', str(lat), str(lon), speed, f'{team}{day}{i}']
+                    for i in range(n)]
+        track_rows = []
+        track_rows += points('SO/TRT/DUM/SNIPDs/001', 12.581, 5.33, n=40, imei='aaaa111122223333')
+        track_rows += points('SO/TRT/DUM/SNIPDs/002', 12.582, 5.33, n=30, imei='bbbb111122223333')
+        track_rows += points('SO /TRT/DUM/SNIPDS/003', 12.583, 5.33, n=20, imei='cccc111122223333')  # code written untidily
+        track_rows += points('SO/TRT/DUM/SNIPDs/004', 12.58, 5.33, day=12, n=15)       # a quieter day
+        track_rows += points('SO/TRT/DUM/SNIPDs/001', 12.581, 5.33, n=10, speed='5')   # moving: backend drops
+        track_rows += points('SO/TRT/DUM/SNIPDs/001', 12.581, 5.33, n=10, hour=22)     # night: backend drops
+        track_rows += points('SO/TRT/DUM/WRONG/005', 12.58, 5.33, n=50)                # not this campaign's code
+        track_rows += points('KN/DAL/XXX/SNIPDs/006', 12.0, 8.5, n=50)                 # another LGA
+        header = 'Team Code,IMEI,GPS Timestamp (UTC),Lat,Lon,Speed mps,Track ID'
+        lines = [header] + [','.join(r) for r in track_rows]
+        lines.insert(5, 'BO- ASU - WAG,- SNIDs - 075,imei,11/13/2026 09:00:00,10.5,13.1,0.1,1')  # a stray comma
+        self.tracks = self.tmp / 'tracks.csv'
+        self.tracks.write_text('\n'.join(lines) + '\n')
+
+        def source(prefix_rows, extra):
+            return pd.DataFrame([{'admin_code': code, 'State': code.split('_')[0], 'LGA': code.split('_')[1],
+                                  'latitude': 12.5, 'longitude': 5.3, **extra} for code in prefix_rows])
+        self.sources = self.tmp / 'sources.xlsx'
+        with pd.ExcelWriter(self.sources) as writer:
+            source(['Sokoto_Tureta_Duma_S0', 'Sokoto_Tureta_Duma_S1', 'Sokoto_Tureta_Duma_S2', 'Kano_Dala_Ward_K0'], {}
+                   ).to_excel(writer, sheet_name='etally', index=False)
+            source(['sokoto_tureta_duma_s3', 'Kano_Dala_Ward_K1', 'Sokoto_Turetafar_X_Y'], {'TeamCode': 1}
+                   ).to_excel(writer, sheet_name='mst', index=False)
+        self.out = self.tmp / 'canary'
+
+    def run_tool(self, command, *extra):
+        argv = [command, '--tracks', str(self.tracks), '--settlements', str(self.settlements),
+                '--sources', str(self.sources), *extra]
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = maker.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def build(self, *extra):
+        return self.run_tool('area', '--state', 'sokoto', '--lga', 'tureta', '--out-dir', str(self.out),
+                             '--teams', '2', *extra)
+
+    def test_area_writes_every_tool_fixture_for_the_chosen_lga(self):
+        code, out, err = self.build()
+        self.assertEqual(code, 0, err)
+        for rel in ('gts_device_tracking/tracks.csv', 'reach/tracks.csv', 'h2h/tracks.csv',
+                    'reach/planned_settlements.xlsx', 'h2h/dip.xlsx', 'reach/data_sources.xlsx'):
+            self.assertTrue((self.out / rel).is_file(), rel)
+        self.assertIn('activity_code for the manifest: SNIPDS', out)
+        self.assertIn('1 malformed row', out)  # the stray-comma row was skipped, not fatal
+
+    def test_tracks_are_the_busiest_day_top_teams_and_rows_the_backend_keeps(self):
+        self.build()
+        tracks = pd.read_csv(self.out / 'gts_device_tracking' / 'tracks.csv', dtype=str)
+        self.assertEqual(set(tracks['Team Code']), {'SO/TRT/DUM/SNIPDs/001', 'SO/TRT/DUM/SNIPDs/002'})
+        self.assertTrue((tracks['GPS Timestamp (UTC)'].str[:5] == '11/13').all())
+        self.assertTrue((tracks['Speed mps'].astype(float) < 1).all())
+        hours = pd.to_datetime(tracks['GPS Timestamp (UTC)'], format='%m/%d/%Y %H:%M:%S').dt.hour
+        self.assertTrue(hours.between(7, 16).all())
+        self.assertEqual(len(tracks), 70)  # 40 + 30: the speed and night rows are not counted
+        # the three tracks files are the same file
+        for other in ('reach', 'h2h'):
+            self.assertEqual((self.out / other / 'tracks.csv').read_bytes(),
+                             (self.out / 'gts_device_tracking' / 'tracks.csv').read_bytes())
+
+    def test_untidy_team_codes_still_count_and_wrong_codes_do_not(self):
+        self.build('--teams', '5')
+        tracks = pd.read_csv(self.out / 'h2h' / 'tracks.csv', dtype=str)
+        teams = set(tracks['Team Code'])
+        self.assertIn('SO /TRT/DUM/SNIPDS/003', teams)
+        self.assertNotIn('SO/TRT/DUM/WRONG/005', teams)
+        self.assertNotIn('KN/DAL/XXX/SNIPDs/006', teams)
+
+    def test_device_ids_are_replaced_but_still_tell_devices_apart(self):
+        self.build()
+        tracks = pd.read_csv(self.out / 'h2h' / 'tracks.csv', dtype=str)
+        self.assertEqual(tracks['IMEI'].nunique(), 2)
+        self.assertTrue((tracks['IMEI'].str.len() == 16).all())
+        self.assertFalse(tracks['IMEI'].isin(['aaaa111122223333', 'bbbb111122223333']).any())
+        self.build()  # deterministic: a rebuild gives the same stand-ins
+        again = pd.read_csv(self.out / 'h2h' / 'tracks.csv', dtype=str)
+        self.assertEqual(list(tracks['IMEI']), list(again['IMEI']))
+
+    def test_settlement_list_is_the_lga_only_with_no_columns_from_an_earlier_run(self):
+        self.build()
+        for rel in ('h2h/dip.xlsx', 'reach/planned_settlements.xlsx'):
+            plan = pd.read_excel(self.out / rel)
+            self.assertEqual(len(plan), 5)
+            self.assertEqual(set(plan['LGAs']), {'Tureta'})
+            self.assertEqual(list(plan.columns), ['State', 'LGAs', 'Wards', 'Settlements', 'Latitude', 'Longitude',
+                                                  'Proposed strategy', 'unique_code'])
+
+    def test_data_sources_keep_one_sheet_per_source_with_only_this_lgas_rows(self):
+        self.build()
+        sheets = pd.read_excel(self.out / 'reach' / 'data_sources.xlsx', sheet_name=None)
+        self.assertEqual(set(sheets), {'etally', 'mst'})
+        self.assertEqual(len(sheets['etally']), 3)
+        self.assertEqual(len(sheets['mst']), 1)  # case-insensitive; 'Tureta' must not match 'Turetafar'
+
+    def test_an_lga_missing_from_a_source_is_reported_not_hidden(self):
+        with pd.ExcelWriter(self.sources) as writer:
+            pd.DataFrame({'admin_code': ['Sokoto_Tureta_Duma_S0'], 'State': 'Sokoto', 'LGA': 'Tureta'}
+                         ).to_excel(writer, sheet_name='etally', index=False)
+            pd.DataFrame({'admin_code': ['Kano_Dala_Ward_K1'], 'State': 'Kano', 'LGA': 'Dala'}
+                         ).to_excel(writer, sheet_name='mst', index=False)
+        code, _, err = self.build()
+        self.assertEqual(code, 1)
+        self.assertIn('no rows for this LGA in data source(s): mst', err)
+
+    def test_unknown_lga_and_missing_files_are_clear(self):
+        with self.assertRaises(SystemExit) as ctx:
+            self.run_tool('area', '--state', 'Sokoto', '--lga', 'Nowhere', '--out-dir', str(self.out))
+        self.assertIn('no rows for Sokoto / Nowhere', str(ctx.exception))
+        self.tracks = self.tmp / 'missing.csv'
+        code, _, err = self.run_tool('areas')
+        self.assertEqual(code, 2)
+        self.assertIn('File not found', err)
+
+    def test_areas_lists_only_lgas_every_source_covers(self):
+        code, out, _ = self.run_tool('areas', '--min-teams', '2', '--min-points', '20')
+        self.assertEqual(code, 0)
+        self.assertIn('Tureta', out)
+        self.assertNotIn('Dala', out)  # the Kano team is the only one there, and its code has one team
+        code, out, _ = self.run_tool('areas', '--min-teams', '4', '--min-points', '20')
+        self.assertEqual(code, 1)
+        self.assertIn('No LGA qualifies', out)
+
+    def test_helpers(self):
+        self.assertEqual(maker.normalise_team_code('SO /trt/DUM_SNIPDs/001'), 'SO-TRT-DUM-SNIPDS-001')
+        self.assertTrue(maker.team_pattern('SNIPDs').match('SO-TRT-DUM-SNIPDS-001'))
+        self.assertTrue(maker.team_pattern('SNIPDs').match('SO-TRT-IYA1-SNIPDS-001'))
+        self.assertFalse(maker.team_pattern('SNIPDs').match('SO-TRT-DUM-SNIPDS-SP-001'))
+        stand_in = maker.pseudonymise(pd.Series(['abc', 'abc', 'abd']))
+        self.assertEqual(stand_in[0], stand_in[1])
+        self.assertNotEqual(stand_in[0], stand_in[2])
 
 
 if __name__ == '__main__':

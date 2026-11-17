@@ -64,7 +64,9 @@ async def generate_target_area(mlos_file: UploadFile, identifier: Identifier = F
     buffer = await run_heavy(build_archive)
 
     # Which states ran and which were skipped (and why), for the Target Area page.
-    summary = summary_header_value(target_area_datasets.states_run, target_area_datasets.skipped_states)
+    summary = summary_header_value(
+        target_area_datasets.states_run, target_area_datasets.skipped_states,
+        getattr(target_area_datasets, 'planned_requested', None), getattr(target_area_datasets, 'planned_matched', None))
 
     return StreamingResponse(
         buffer,

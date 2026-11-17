@@ -109,7 +109,7 @@ const VIEW_META: Record<AppView, { title: string; subtitle: string }> = {
   'compiler-tracks': {
     title: 'Compiler · Tracks',
     subtitle:
-      'POST /compiler/tracks — combine individual GPS track files into one geospatial dataset, optionally clipped to a state boundary, and view every compiled point on a map.',
+      'POST /compiler/tracks — combine individual GPS track files into one geospatial dataset, optionally clipped to a state boundary, and download it as a GeoPackage.',
   },
   'compiler-disaggregate': {
     title: 'Compiler · Disaggregate MLoS',
@@ -119,7 +119,7 @@ const VIEW_META: Record<AppView, { title: string; subtitle: string }> = {
   'compiler-lga-data': {
     title: 'Compiler · Combine LGA Data',
     subtitle:
-      "POST /compiler/lga_data — merge per-LGA validation datasets into one combined dataset (though as written the route can't complete against realistic input — see the caveat on the page).",
+      'POST /compiler/lga_data — merge per-LGA validation datasets into one combined dataset.',
   },
   'daily-report': {
     title: 'Reporting · Daily Report',

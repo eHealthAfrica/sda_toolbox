@@ -72,8 +72,7 @@ export default function LgaDataForm({ onFileSelected, onSubmit, submitting }: Lg
     >
       <h2 style={{ fontSize: 13, margin: '0 0 3px' }}>Run settings</h2>
       <div style={{ fontSize: 11.5, color: 'var(--color-text-muted)', marginBottom: 12 }}>
-        Upload a zip of per-LGA validation data. The extension field only matters when the upload is a zip. Read the
-        caveat below before expecting a working "Combine" button — see the note about why.
+        Upload a zip of per-LGA validation data. The extension field only matters when the upload is a zip.
       </div>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <FileDropzone label="LGA data file (.zip / .xlsx / .xls / .csv)" accept=".zip,.xlsx,.xls,.csv" file={lgaFile} onChange={handleFileChange} fillWidth />

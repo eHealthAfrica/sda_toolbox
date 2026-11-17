@@ -1,10 +1,12 @@
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from toolbox.job_tracker import health, joblog
+from toolbox.job_tracker import health, joblog, report
 from toolbox.utils.upload_limit import max_upload_bytes
 from toolbox.job_tracker.incidents import IncidentError
 from toolbox.job_tracker.store import (
@@ -12,6 +14,7 @@ from toolbox.job_tracker.store import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Notes for anyone adding routes here: none of these paths are in
 # middleware.TOOL_ENDPOINTS, so none of them is logged as a job. They are
@@ -42,6 +45,47 @@ def jobs_stats(
     chosen window. See "SDA Toolbox Reliability: Backend Spec", API contract.
     """
     return get_stats(window=window, tool=tool, include_canary=include_canary)
+
+
+@router.get('/jobs/report', tags=['Reliability'])
+def jobs_report(window: str = Query('30d', pattern='^(7d|30d|90d)$')) -> Response:
+    """The Reliability page as a PDF in the eHealth Africa slide style: headline
+    numbers against the target, success rate by day, failure causes, reliability
+    by tool, crash causes, incidents, recent failures and backend readiness, all
+    over the chosen window (default the last 30 days). Built from the same
+    numbers as GET /jobs/stats, /incidents and /ready.
+    """
+    stats = get_stats(window=window)
+    start = report.parse_iso(stats['window']['from'])
+
+    # Incidents that matter for this window: anything still unresolved, plus
+    # anything opened or resolved inside it. Older resolved ones are history.
+    def in_window(incident: dict) -> bool:
+        if incident['status'] != 'resolved':
+            return True
+        stamps = (report.parse_iso(incident.get('opened_at')), report.parse_iso(incident.get('resolved_at')))
+        return any(stamp is not None and stamp >= start for stamp in stamps)
+
+    incidents = [i for i in get_incidents(status='all', limit=200) if in_window(i)]
+    failed = [
+        job for job in get_recent(limit=200, status='failed', source='user')
+        if (report.parse_iso(job.get('started_at')) or start) >= start
+    ][:15]
+    try:
+        ready, _ = health.readiness()
+    except Exception:
+        # The report is still worth having when a health probe misbehaves.
+        logger.exception('reliability report: readiness checks failed')
+        ready = None
+
+    now = datetime.now(timezone.utc)
+    pdf = report.build_report_pdf(stats, incidents, failed, ready, generated_at=now)
+    filename = f'sda_toolbox_reliability_{window}_{now:%Y-%m-%d}.pdf'
+    return Response(
+        content=pdf,
+        media_type='application/pdf',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get('/jobs/{job_id}/logs', tags=['Jobs'])

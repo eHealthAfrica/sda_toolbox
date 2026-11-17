@@ -9,6 +9,7 @@ from toolbox.mlos.transform import standardize_mlos_records
 from toolbox.tools import issues_counter, generate_output_name
 from toolbox.mlos.validation.review.run_validate import run_settlements_qc
 from toolbox.mlos import get_admin_col, detect_unique_admin_field, construct_new_unique
+from toolbox.dataops import mlos as mlos_checks
 from toolbox.utils.offload import run_heavy
 from toolbox.utils.tempfiles import afile_response
 
@@ -56,23 +57,31 @@ async def validate_mlos(mlos_file_path: UploadFile, standardize: bool=None, cons
     mlos_data: pd.DataFrame = await read_dataset(mlos_file_path)
     get_admin_col(mlos_data, 'state', 'raise')
 
-    def prepare(data: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    def prepare(data: pd.DataFrame) -> tuple[pd.DataFrame, str, bool]:
         if standardize:
             print('Standardizing MLoS Records')
             data = standardize_mlos_records(data)
 
         unique_col = detect_unique_admin_field(data)
-        if not unique_col:
+        built = not unique_col
+        if built:
             unique_col = 'unique_code'
             data = construct_new_unique(data, unique_col)
-        return data, unique_col
+        return data, unique_col, built
 
-    mlos_data, unique_col = await run_heavy(prepare, mlos_data)
+    mlos_data, unique_col, unique_code_built = await run_heavy(prepare, mlos_data)
+
+    # Stops early, with a message that says what to fix, if the QC cannot run on this file (an empty file,
+    # no coordinate columns); `report` also collects warnings for the X-Data-Warning header.
+    report = await run_heavy(mlos_checks.validate_input, mlos_data, unique_col, unique_code_built=unique_code_built)
+    records_checked = len(mlos_data)
 
     qc_ed_mlos: pd.DataFrame = await run_settlements_qc(mlos_data, unique_col, consistency, deep_search)
+    mlos_checks.check_output(report, qc_ed_mlos, records_checked)
 
     save_name = generate_output_name(mlos_file_path.filename, 'csv', 'QC')
-    return await afile_response(lambda path: qc_ed_mlos.to_csv(path, index=False), '.csv', 'text/csv', save_name)
+    return await afile_response(
+        lambda path: qc_ed_mlos.to_csv(path, index=False), '.csv', 'text/csv', save_name, headers=report.headers())
 
 
 if __name__ == '__main__':

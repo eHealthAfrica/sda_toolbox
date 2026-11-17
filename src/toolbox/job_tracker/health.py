@@ -4,6 +4,7 @@ import re
 import shutil
 import tempfile
 import time
+import warnings
 from typing import Callable
 
 from toolbox.job_tracker import store
@@ -66,6 +67,41 @@ def _check_disk_free() -> tuple[bool, str]:
     return free_gb >= minimum, f'{free_gb:.1f} GB free (minimum {minimum:g} GB)'
 
 
+def _filter_that_decides(category: type = UserWarning, text: str = 'probe', module: str = 'pandas.io.sql'):
+    """The warning filter Python would apply to a warning of this kind: the first entry in
+    warnings.filters that matches, the same way warnings.warn() walks them. None when no entry
+    matches (the default action then applies, which never raises).
+
+    This only READS the filter list. It must not use warnings.catch_warnings(), which swaps the
+    process-wide list and is not safe when other threads are running."""
+    for action, message, filter_category, filter_module, lineno in list(warnings.filters):
+        if message is not None and not message.match(text):
+            continue
+        if not issubclass(category, filter_category):
+            continue
+        if filter_module is not None and not filter_module.match(module):
+            continue
+        return action, filter_category
+    return None
+
+
+def _check_warnings_not_errors() -> tuple[bool, str]:
+    """Fails when a plain UserWarning would be raised as an exception.
+
+    Libraries warn all the time (pandas does on some database reads). If the process's warning
+    filter says 'error', each of those warnings becomes an HTTP 500 until the backend restarts.
+    The canary found exactly that: /uuid_check and the GTS team review failed with
+    "UserWarning: pandas only supports SQLAlchemy connectable...". Nothing in this repo sets such a
+    filter, so when it appears something else (an environment setting, a library) put it there."""
+    decided = _filter_that_decides()
+    if decided and decided[0] == 'error':
+        return False, (
+            "warnings are being raised as errors (filter 'error' for "
+            f"{decided[1].__name__}), so any library warning becomes an HTTP 500; restart the backend "
+            "and check PYTHONWARNINGS / -W error")
+    return True, 'warnings are not turned into errors'
+
+
 def _check_postgis() -> tuple[bool, str]:
     # Imported here so /ready still answers on an instance whose database
     # settings are missing, and so a slow import never delays /health.
@@ -98,6 +134,8 @@ _CHECKS: list[tuple[str, bool, Callable[[], tuple[bool, str]]]] = [
     ('jobs_db', True, _check_jobs_db),
     ('logs_dir_writable', True, _check_logs_dir),
     ('disk_free', True, _check_disk_free),
+    # Critical: with this on, ordinary tool requests fail even though /health still answers.
+    ('warnings_not_errors', True, _check_warnings_not_errors),
     ('postgis', False, _check_postgis),
     ('reference_data', False, _check_reference_data),
 ]

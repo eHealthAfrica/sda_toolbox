@@ -73,9 +73,12 @@ def standardize_attribute_values(data: pd.DataFrame, columns: list | None=None, 
     data[settlement] = data.apply(update_abbreviations, args=(settlement,), axis=1)
     unique_code: str = unique_code if unique_code else detect_unique_admin_field(data)
 
-    if unique_code:
+    # The caller's name for the code column can be stale (the column was renamed since it was found), and a file
+    # may have no code column at all. Neither may crash the drop or leave the rebuilt code without a name.
+    if unique_code and unique_code in data.columns:
         print('Deleting Unique Code')
         data.drop(columns=unique_code, inplace=True)
+    unique_code = unique_code or 'unique_code'
 
     data = construct_new_unique(data, unique_code, settlement)
     return data
