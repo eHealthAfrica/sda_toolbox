@@ -76,7 +76,7 @@ def nothing(*_a, **_k):
     return None
 
 
-async def afile_response(writer, suffix, media_type, name):
+async def afile_response(writer, suffix, media_type, name, headers=None):
     return ('file', suffix, media_type, name)
 
 
@@ -323,7 +323,7 @@ class TestCampaignRoutes(Responsive):
         self.assertEqual(result[:3], CSV)
 
     def test_target_area_for_settlements(self):
-        dataset = SimpleNamespace(voronoi=1, gridded_ta=2, voronoi_subset=3, gridded_ta_subset=4)
+        dataset = SimpleNamespace(voronoi=1, gridded_ta=2, voronoi_subset=3, gridded_ta_subset=4, states_run=[], skipped_states=[])
         route = load_route(
             'apps/campaign/target_area.py',
             **{'toolbox.access': dict(read_mgr=SimpleNamespace(read_dataset=serving(FRAME))),
@@ -333,7 +333,7 @@ class TestCampaignRoutes(Responsive):
         self.assertEqual(result.kwargs['media_type'], 'application/x-zip-compressed')
 
     def test_target_area_zip_is_built_off_the_loop(self):
-        dataset = SimpleNamespace(voronoi=1, gridded_ta=2)
+        dataset = SimpleNamespace(voronoi=1, gridded_ta=2, states_run=[], skipped_states=[])
         route = load_route(
             'apps/campaign/target_area.py',
             **{'toolbox.access': dict(read_mgr=SimpleNamespace(read_dataset=serving(FRAME))),

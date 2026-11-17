@@ -28,7 +28,7 @@ import logging
 import os
 import tempfile
 import time
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
@@ -93,13 +93,15 @@ def delete_after_response(path: str) -> BackgroundTask:
     return BackgroundTask(remove_file, path)
 
 
-def file_response(write: Callable[[str], None], suffix: str, media_type: str, filename: str) -> FileResponse:
+def file_response(write: Callable[[str], None], suffix: str, media_type: str, filename: str,
+                  headers: Optional[Mapping[str, str]] = None) -> FileResponse:
     """Write a result with ``write(path)`` and return it as a download that deletes itself.
 
     `write` receives the path of a new empty file in the results folder (a lambda around
     ``df.to_csv`` or a small function that fills an ``ExcelWriter``). If it raises, the
     half-written file is removed and the error propagates unchanged; otherwise the file is
-    deleted once the response has been sent.
+    deleted once the response has been sent. `headers` are extra response headers, for example the
+    ``X-Data-Warning`` header a tool's data checks produce.
     """
     path = new_result_file(suffix)
     try:
@@ -107,10 +109,11 @@ def file_response(write: Callable[[str], None], suffix: str, media_type: str, fi
     except BaseException:
         remove_file(path)
         raise
-    return _download(path, media_type, filename)
+    return _download(path, media_type, filename, headers)
 
 
-async def afile_response(write: Callable[[str], None], suffix: str, media_type: str, filename: str) -> FileResponse:
+async def afile_response(write: Callable[[str], None], suffix: str, media_type: str, filename: str,
+                         headers: Optional[Mapping[str, str]] = None) -> FileResponse:
     """``file_response`` for use inside ``async def`` routes: ``await afile_response(...)``.
 
     Writing a large CSV or workbook takes seconds of CPU and disk work. Here it runs in a worker
@@ -122,8 +125,9 @@ async def afile_response(write: Callable[[str], None], suffix: str, media_type: 
     except BaseException:
         remove_file(path)
         raise
-    return _download(path, media_type, filename)
+    return _download(path, media_type, filename, headers)
 
 
-def _download(path: str, media_type: str, filename: str) -> FileResponse:
-    return FileResponse(path, media_type=media_type, filename=filename, background=delete_after_response(path))
+def _download(path: str, media_type: str, filename: str, headers: Optional[Mapping[str, str]] = None) -> FileResponse:
+    return FileResponse(path, media_type=media_type, filename=filename, headers=dict(headers) if headers else None,
+                        background=delete_after_response(path))

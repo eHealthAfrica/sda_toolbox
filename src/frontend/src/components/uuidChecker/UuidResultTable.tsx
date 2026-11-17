@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { UuidCheckResult } from '../../types/uuidChecker'
-import { UUID_EXISTS_COLORS } from '../../utils/colors'
+import { UUID_AVAILABILITY_COLORS } from '../../utils/colors'
 import Pager from '../common/Pager'
 
 interface UuidResultTableProps {
@@ -30,18 +30,28 @@ const tdStyle: CSSProperties = {
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
 }
 
-function Dot({ color }: { color: string }) {
+// ✓ / ✕ badge in the availability color, so the status never relies on color alone.
+function Tick({ available }: { available: boolean }) {
   return (
     <span
+      aria-hidden="true"
       style={{
-        display: 'inline-block',
-        width: 8,
-        height: 8,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 16,
+        height: 16,
         borderRadius: '50%',
-        background: color,
+        background: UUID_AVAILABILITY_COLORS[available ? 'Available' : 'Not Available'],
+        color: '#fff',
+        fontSize: 10,
+        fontWeight: 700,
         marginRight: 6,
+        verticalAlign: 'middle',
       }}
-    />
+    >
+      {available ? '✓' : '✕'}
+    </span>
   )
 }
 
@@ -86,6 +96,7 @@ export default function UuidResultTable({ results, title = 'Results' }: UuidResu
                   <th style={{ ...thStyle, width: 48 }}>#</th>
                   <th style={thStyle}>UUID</th>
                   <th style={thStyle}>Status</th>
+                  <th style={thStyle}>Reason</th>
                 </tr>
               </thead>
               <tbody>
@@ -94,8 +105,11 @@ export default function UuidResultTable({ results, title = 'Results' }: UuidResu
                     <td style={{ ...tdStyle, color: 'var(--color-text-muted)' }}>{clampedPage * PAGE_SIZE + i + 1}</td>
                     <td style={tdStyle}>{result.uuid}</td>
                     <td style={{ ...tdStyle, fontFamily: 'inherit' }}>
-                      <Dot color={UUID_EXISTS_COLORS[result.exists]} />
-                      {result.exists}
+                      <Tick available={result.is_available === 'Available'} />
+                      {result.is_available}
+                    </td>
+                    <td style={{ ...tdStyle, fontFamily: 'inherit', color: 'var(--color-text-muted)' }}>
+                      {result.reason ?? '—'}
                     </td>
                   </tr>
                 ))}

@@ -187,6 +187,21 @@ class TempFilesTest(unittest.TestCase):
         self.assertFalse(os.path.exists(seen['path']))
         self.assertEqual(os.listdir(tempfiles.RESULT_DIR), [])
 
+    def test_extra_headers_are_sent_with_the_download(self):
+        header = {'X-Data-Warning': 'most_flagged: too many'}
+        sync = tempfiles.file_response(lambda p: open(p, 'w').close(), '.csv', 'text/csv', 'o.csv', headers=header)
+        asynchronous = asyncio.run(
+            tempfiles.afile_response(lambda p: open(p, 'w').close(), '.csv', 'text/csv', 'o.csv', headers=header))
+        for response in (sync, asynchronous):
+            self.assertEqual(response.headers['x-data-warning'], 'most_flagged: too many')
+            self.assertEqual(response.media_type, 'text/csv')  # nothing else changed
+            tempfiles.remove_file(response.path)
+
+    def test_no_headers_means_no_extra_headers(self):
+        response = tempfiles.file_response(lambda p: open(p, 'w').close(), '.csv', 'text/csv', 'o.csv')
+        self.assertNotIn('x-data-warning', response.headers)
+        tempfiles.remove_file(response.path)
+
     def test_afile_response_sets_type_and_download_name(self):
         response = asyncio.run(tempfiles.afile_response(lambda p: open(p, 'w').close(), '.xlsx', 'application/x-test', 'book.xlsx'))
         self.assertEqual(response.media_type, 'application/x-test')

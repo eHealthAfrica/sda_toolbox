@@ -1,5 +1,5 @@
 import type { TargetAreaRunSummary } from '../../types/targetArea'
-import { statesRunText } from '../../utils/targetAreaRun'
+import { plannedShortfall, statesRunText } from '../../utils/targetAreaRun'
 
 interface TargetAreaStatesCardProps {
   summary: TargetAreaRunSummary | null
@@ -15,7 +15,9 @@ export default function TargetAreaStatesCard({ summary }: TargetAreaStatesCardPr
   if (total === 0) return null
 
   const skippedCount = summary.skipped.length
-  const accent = skippedCount > 0 ? 'var(--color-critical)' : 'var(--color-good)'
+  const planned = summary.planned
+  const shortfall = plannedShortfall(summary)
+  const accent = skippedCount > 0 || shortfall > 0 ? 'var(--color-critical)' : 'var(--color-good)'
 
   return (
     <section
@@ -43,6 +45,23 @@ export default function TargetAreaStatesCard({ summary }: TargetAreaStatesCardPr
             : `${skippedCount} ${skippedCount === 1 ? 'state was' : 'states were'} skipped and ${skippedCount === 1 ? 'is' : 'are'} not in the download.`}
         </div>
       </div>
+
+      {planned && planned.requested > 0 && (
+        <div
+          role={shortfall > 0 ? 'alert' : undefined}
+          style={{
+            marginTop: 10,
+            fontSize: 12.5,
+            fontWeight: shortfall > 0 ? 600 : 400,
+            color: shortfall > 0 ? 'var(--color-critical)' : 'var(--color-text-muted)',
+          }}
+        >
+          {shortfall === 0
+            ? `All ${planned.requested.toLocaleString()} planned settlements are in the planned-list layers.`
+            : `${planned.matched.toLocaleString()} of ${planned.requested.toLocaleString()} planned settlements were found in the generated target areas. ` +
+              `${shortfall.toLocaleString()} did not match a settlement in the master list by unique code, or belong to a state that was not run.`}
+        </div>
+      )}
 
       {summary.statesRun.length > 0 && (
         <ul

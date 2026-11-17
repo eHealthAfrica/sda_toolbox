@@ -484,23 +484,45 @@ def preview_settlements(settlements: gpd.GeoDataFrame, guid_col: str, admin_code
         (settlement_view.geometry.x!=0) & (settlement_view.geometry.y!=0)
     ]
 
+    # A settlement with no unique code cannot be tracked: the Voronoi step merges every blank code into one
+    # record and the dissolve drops them, so they would silently vanish from the result. Reject them here.
+    code_text = settlement_view[admin_code_col].astype('object').where(settlement_view[admin_code_col].notna(), '')
+    blank_code = code_text.astype(str).str.strip().eq('')
+
     # A missing id is not a duplicate of another missing id, so only filled values are compared.
     duplicate_masks = {
         'a location shared with another settlement': settlement_view.duplicated(subset='geometry', keep=False),
-        'a duplicated unique code': settlement_view.duplicated(subset=admin_code_col, keep=False) & settlement_view[admin_code_col].notna(),
+        'a blank unique code': blank_code,
+        'a duplicated unique code': settlement_view.duplicated(subset=admin_code_col, keep=False) & ~blank_code,
         'a duplicated GUID': settlement_view.duplicated(subset=guid_col, keep=False) & settlement_view[guid_col].notna(),
-        'missing GUID': settlement_view[guid_col].isna()
+        'a missing GUID': settlement_view[guid_col].isna()
     }
 
+    def label(position: int) -> str:
+        """How to point at one settlement: its code, else its GUID, else its row in the uploaded file."""
+        code, guid = code_text.iloc[position], settlement_view[guid_col].iloc[position]
+        if str(code).strip():
+            return str(code)
+        if pd.notna(guid) and str(guid).strip():
+            return str(guid)
+        index = settlement_view.index[position]
+        try:
+            return f'row {int(index) + 2}'  # the uploaded file's row: its index counts from 0 and the header is row 1
+        except (TypeError, ValueError):
+            return f'row {index}'
+
     errors = []
+    duplicated = False
     for problem, mask in duplicate_masks.items():
         count = int(mask.sum())
         if count < 1:
             continue
-        examples = ', '.join(str(code) for code in settlement_view.loc[mask, admin_code_col].head(3))
+        duplicated = duplicated or 'duplicated' in problem or 'shared' in problem
+        positions = [position for position, flagged in enumerate(mask.to_numpy()) if flagged][:3]
+        examples = ', '.join(label(position) for position in positions)
         errors.append(f"{count:,} settlements have {problem} (e.g. {examples})")
 
     if errors:
-        raise DataError('Duplicates Found', "; ".join(errors))
+        raise DataError('Duplicates Found' if duplicated else 'Missing Identifiers', "; ".join(errors))
 
     return settlement_view

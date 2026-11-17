@@ -4,7 +4,6 @@ import warnings
 from typing import Any
 from pathlib import Path
 
-import psycopg2
 import pandas as pd
 import geopandas as gpd
 from fastapi import UploadFile
@@ -13,6 +12,7 @@ from functools import cached_property
 from sqlalchemy import create_engine, text
 from pandas.errors import ParserError, ParserWarning
 
+from toolbox import input_notes
 from toolbox.utils import Credential
 from toolbox.spatial_mgr import GeomColumns
 from toolbox.spatial_mgr import convert_to_geodata
@@ -127,6 +127,8 @@ class ReadTableData:
             if hasattr(content, 'seek'):
                 content.seek(0)  # the failed attempt already consumed the upload; read it again from the start
             data = self.read_data_from_csv(content, self.has_coord) # noqa
+            # The tolerant read drops malformed rows without a word; say so (shown as a data warning).
+            input_notes.report_skipped_rows(content, len(data), input_notes.display_name(self.file_path))
 
         if not self.has_coord:
             return data
@@ -153,13 +155,19 @@ class ReadTableData:
 
 
 class ReadDBData(Reader):
+    """Reads one database table through a SQLAlchemy engine.
+
+    Every read goes through a SQLAlchemy connection. It used to hand pandas a raw psycopg2 connection,
+    which makes pandas emit "pandas only supports SQLAlchemy connectable..." on every call; whenever the
+    process's warning filter was set to raise, that warning became a 500 on /uuid_check, the GTS team
+    review and anything else that read a plain table (found by the canary). The engine is disposed after
+    each read, so no connection is left open per reader."""
+
     def __init__(self, db_table: str, is_spatial: bool, credential: Credential = None):
         self.credential = credential if credential else Credential()
         self.db_table = db_table
         self.is_spatial = is_spatial
         self.engine = create_engine(self.credential.connection_string)
-        self.connect = psycopg2.connect(**self.credential.__dict__)
-        self.cursor = self.connect.cursor()
         super().__init__(db_table)
 
     def read_data(self, params: dict[str, Any]=None) -> pd.DataFrame | gpd.GeoDataFrame:
@@ -172,22 +180,25 @@ class ReadDBData(Reader):
 
         logging.info(f'Reading Database Table: {self.db_table}')
 
-        with self.engine.connect() as conn:
-            if self.is_spatial:
-                query = text(query)
-                data: gpd.GeoDataFrame = gpd.read_postgis(sql=query, con=conn, geom_col=self.geo_col, params=values)
-                data.rename_geometry('geometry', inplace=True) if 'geom' in data.columns else None
+        try:
+            with self.engine.connect() as conn:
+                if self.is_spatial:
+                    query = text(query)
+                    data: gpd.GeoDataFrame = gpd.read_postgis(sql=query, con=conn, geom_col=self.geo_col, params=values)
+                    data.rename_geometry('geometry', inplace=True) if 'geom' in data.columns else None
 
-            else:
-                data: pd.DataFrame = pd.read_sql(query, self.connect, params=values)
+                else:
+                    data: pd.DataFrame = pd.read_sql(query, conn, params=values)
 
-            if data.empty:
-                columns = ", ".join([col for col in params.keys()]) if params else ""
-                value_str = ", ".join(val for val in values) if params else ""
-                raise NoRecordsFound(
-                    'No Records found', f'No Records in for {value_str} in {columns} in {self.db_table} was found')
+                if data.empty:
+                    columns = ", ".join([col for col in params.keys()]) if params else ""
+                    value_str = ", ".join(val for val in values) if params else ""
+                    raise NoRecordsFound(
+                        'No Records found', f'No Records in for {value_str} in {columns} in {self.db_table} was found')
 
-            return data
+                return data
+        finally:
+            self.engine.dispose()
 
     def record_exists(self, params: dict[str, Any]) -> bool:
         query = f'SELECT * FROM {self.db_table}'
@@ -197,27 +208,29 @@ class ReadDBData(Reader):
             fields_map, values = parse_read_parameters(params)
             query += f" WHERE {fields_map}"
 
-        res: pd.DataFrame = pd.read_sql(query, self.connect, params=values)
-        if res.empty:
-            return False
+        try:
+            with self.engine.connect() as conn:
+                res: pd.DataFrame = pd.read_sql(query, conn, params=values)
+        finally:
+            self.engine.dispose()
 
-        return True
-
+        return not res.empty
 
     @cached_property
     def geo_col(self):
-        self.cursor.execute(
-            """
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = %s
-            AND data_type = 'USER-DEFINED'
-            AND udt_name = 'geometry';
-            """,
-            (self.db_table,),
-        )
-
-        result = self.cursor.fetchone()
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = :table_name
+                    AND data_type = 'USER-DEFINED'
+                    AND udt_name = 'geometry'
+                    """
+                ),
+                {'table_name': self.db_table},
+            ).fetchone()
 
         if result:
             geometry_column = result[0]

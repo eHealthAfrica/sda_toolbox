@@ -21,9 +21,11 @@ def clip_to_boundary(raw_voronoi: gpd.GeoDataFrame, boundary: gpd.GeoDataFrame):
 
 
 def own_points(pieces: gpd.GeoDataFrame) -> gpd.GeoSeries:
-    """Each row's own settlement point, rebuilt from latitude/longitude and aligned to the row index."""
-    pts = gpd.points_from_xy(pieces.centroid.x, pieces.centroid.y, crs=f"EPSG:{CONFIG['SOURCE_EPSG']}")
-    return gpd.GeoSeries(pts, index=pieces.index).to_crs(pieces.crs)
+    """Each row's own settlement point, rebuilt from the projected coordinates stored before the tessellation.
+
+    _px/_py are in the same projection as the pieces, so nothing is reprojected and no latitude/longitude column
+    name is needed. (The piece's own centroid is not the settlement: it is a median ~400 m away.)"""
+    return gpd.GeoSeries(gpd.points_from_xy(pieces['_px'], pieces['_py']), index=pieces.index, crs=pieces.crs)
 
 
 def identify_non_overlapping_extent(settlement_voronoi: gpd.GeoDataFrame, global_id: str) -> gpd.GeoDataFrame:
@@ -77,6 +79,10 @@ def build_state_voronoi(settlements: gpd.GeoDataFrame, grid3_extent: gpd.GeoData
         inplace=True
     )
     settlements.drop_duplicates(subset=unique_column, inplace=True, keep='first')
+    # Each settlement's own point in the working projection. It rides along through the tessellation, overlays and
+    # dissolve (as an ordinary column) so identify_non_overlapping_extent can measure from the real point.
+    settlements['_px'] = settlements.geometry.x
+    settlements['_py'] = settlements.geometry.y
 
     out_voronoi = create_tesselation_polygon(settlements) if len(settlements)>=4 else fallback_voronoi(settlements)
     state_voronoi: gpd.GeoDataFrame = clip_to_boundary(out_voronoi, boundary)

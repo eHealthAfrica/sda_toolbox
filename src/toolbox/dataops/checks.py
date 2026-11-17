@@ -36,6 +36,7 @@ from typing import Any, Iterable, Optional
 
 import pandas as pd
 
+from toolbox import input_notes
 from toolbox.errors import DataContractError
 
 logger = logging.getLogger(__name__)
@@ -80,8 +81,17 @@ class Report:
     def fatal(self) -> list[Finding]:
         return [f for f in self.findings if f.fatal]
 
+    def _absorb_input_notes(self) -> None:
+        """Fold in what the readers did to the uploaded files (toolbox/input_notes.py).
+
+        Done whenever the warnings are asked for, not when the Report is made: some tools make their
+        Report before they read the files. Safe to repeat: the one finding is replaced, not added again."""
+        self.findings = [f for f in self.findings if f.code != SKIPPED_ROWS_CODE]
+        self.add(skipped_rows_finding(input_notes.notes()))
+
     @property
     def warnings(self) -> list[Finding]:
+        self._absorb_input_notes()
         return [f for f in self.findings if not f.fatal]
 
     def raise_if_fatal(self) -> 'Report':
@@ -112,6 +122,33 @@ class Report:
         if len(text) > HEADER_MAX_CHARS:
             text = text[:HEADER_MAX_CHARS - 3].rstrip() + '...'
         return {WARNING_HEADER: text}
+
+
+# ---- what the readers did to the input -------------------------------------
+
+SKIPPED_ROWS_CODE = 'skipped_malformed_rows'
+
+def skipped_rows_finding(notes: Iterable[dict[str, Any]]) -> Optional[Finding]:
+    """One warning for every file whose malformed rows were dropped while it was read.
+
+    Always a warning, never fatal: the tool can still answer, but from fewer rows than the file
+    held, and that is worth knowing. The line numbers are examples; the file content is not quoted
+    because a row can hold device ids."""
+    skipped = [n for n in notes if n.get('kind') == 'skipped_rows' and n.get('skipped', 0) > 0]
+    if not skipped:
+        return None
+    total = sum(n['skipped'] for n in skipped)
+    rows = f"{total:,} malformed row{'s' if total != 1 else ''}"
+    first = skipped[0]
+    where = f" (first at line {first['lines'][0]})" if first.get('lines') else ''
+    if len(skipped) == 1:
+        message = (f"{rows} in '{first['source']}' had more fields than the header and "
+                   f"{'were' if total != 1 else 'was'} skipped{where}.")
+    else:
+        line = f", line {first['lines'][0]}" if first.get('lines') else ''
+        message = (f"{rows} across {len(skipped)} files had more fields than the header and were skipped "
+                   f"(first in '{first['source']}'{line}).")
+    return Finding(SKIPPED_ROWS_CODE, message, False, {'files': skipped})
 
 
 # ---- helpers ---------------------------------------------------------------

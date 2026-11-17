@@ -636,6 +636,22 @@ export async function fetchJobsStats(window: StatsWindow = '30d'): Promise<JobsS
 }
 
 /**
+ * Calls GET /jobs/report: the Reliability page as a PDF (eHealth Africa slide
+ * style) for the chosen window. Resolves with the PDF blob; the file name is
+ * built here rather than read from Content-Disposition, which a cross-origin
+ * page cannot see without an extra CORS expose header.
+ */
+export async function fetchReliabilityReport(window: StatsWindow = '30d'): Promise<{ blob: Blob; fileName: string }> {
+  const params = new URLSearchParams({ window })
+  const response = await apiFetch(`${API_BASE_URL}/jobs/report?${params.toString()}`)
+  await throwIfNotOk(response)
+  const blob = await response.blob()
+  if (blob.size === 0) throw new Error('The server returned an empty report.')
+  const day = new Date().toISOString().slice(0, 10)
+  return { blob, fileName: `sda_toolbox_reliability_${window}_${day}.pdf` }
+}
+
+/**
  * Calls GET /incidents (Reliability spec), newest first. `status` is
  * open | acknowledged | resolved | all.
  */
@@ -935,7 +951,8 @@ export async function submitDipGenerator(
  *
  * Returns a single un-zipped .gpkg file as a Blob (NOT a zip, despite the
  * route's own docstring calling it "zipped sqlite" — see the caveat in
- * types/compilerTracks.ts) — read it with src/utils/gpkg.ts::readGpkgLayer.
+ * types/compilerTracks.ts). TracksPage only offers it as a download; it can
+ * still be read with src/utils/gpkg.ts::readGpkgLayer if a preview returns.
  */
 export async function submitCombineTracks(input: TracksFormInput): Promise<Blob> {
   if (!input.tracksFile) {

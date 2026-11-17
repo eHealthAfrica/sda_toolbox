@@ -100,6 +100,8 @@ services:
     container_name: sda-toolbox-api
     env_file:
       - .env
+      - path: .env
+        required: false
     ports:
       - "8000:8000"
     volumes:

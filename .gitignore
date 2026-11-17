@@ -9,9 +9,7 @@ wheels/
 
 # Virtual environments
 .venv
-
 dev/
-*.env
 Outputs/
 logs/
 data/
@@ -21,6 +19,13 @@ htmlcov/
 *.ipynb
 design/
 Claude outputs/
+node_modules/
+
+.env
+.env.*
+!.env.example
+*.py[cod]
+.DS_Store
 
 BACKEND_CHANGES_NEEDED.md
 DOCKERIZATION_PLAN.md

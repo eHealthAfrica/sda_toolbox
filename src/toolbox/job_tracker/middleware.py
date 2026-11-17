@@ -7,6 +7,7 @@ from typing import Optional
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from toolbox import input_notes
 from toolbox.job_tracker import joblog
 from toolbox.job_tracker.store import start_job, finish_job
 from toolbox.job_tracker.classify import CATEGORY_HEADER, classify, describe_exception, traceback_hash
@@ -178,6 +179,7 @@ class JobLoggingMiddleware:
 
         token = current_job_id.set(job_id)
         client_token = current_client_job_id.set(client_job_id)
+        notes_token = input_notes.begin()  # readers note rows they had to skip; Report turns that into a warning
         try:
             await self.app(scope, receive, send_wrapper)
         except Exception as exc:
@@ -195,6 +197,7 @@ class JobLoggingMiddleware:
                 current_client_job_id.reset(client_token)
             except ValueError:
                 pass
+            input_notes.end(notes_token)
             joblog.mark_finished(client_job_id)
 
 

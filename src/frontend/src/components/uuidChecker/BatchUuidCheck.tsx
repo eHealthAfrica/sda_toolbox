@@ -3,6 +3,7 @@ import { ApiError, checkUuidBatch } from '../../api/client'
 import type { ParsedUuidBatch, UuidCheckResult } from '../../types/uuidChecker'
 import { parseUuidFile, parseUuidText } from '../../utils/uuidFile'
 import { downloadCsv } from '../../utils/csvExport'
+import { UUID_AVAILABILITY_COLORS } from '../../utils/colors'
 import { useJobTracker } from '../../state/jobTracker'
 import StatCard from '../common/StatCard'
 import FileDropzone from '../common/FileDropzone'
@@ -12,7 +13,9 @@ const LARGE_BATCH_WARNING_THRESHOLD = 500
 const EMPTY_BATCH: ParsedUuidBatch = { uuids: [], invalid: [], duplicateCount: 0 }
 
 // POST /uuid_batch_checker — file (.csv/.txt) or pasted UUIDs, checked in one
-// request, with a CSV export of the results. Malformed rows are filtered out
+// request: each one is Available (can be assigned to a new settlement) or Not
+// Available with a reason (already in the MLoS, or reserved), with a CSV
+// export of the results. Malformed rows are filtered out
 // client-side before the request goes out (see utils/uuidFile.ts) rather
 // than sent, since the endpoint takes the whole list as one JSON body and a
 // single bad UUID would 422 the entire batch.
@@ -81,15 +84,23 @@ export default function BatchUuidCheck() {
 
   function handleDownload() {
     if (!results) return
-    const rows = results.map((r) => ({ uuid: r.uuid, exists: r.exists }))
+    const rows = results.map((r) => ({ uuid: r.uuid, is_available: r.is_available, reason: r.reason ?? '' }))
     const stamp = fileName ? fileName.replace(/\.[^.]+$/, '') : 'uuid_batch'
     downloadCsv(`${stamp}_results.csv`, rows)
   }
 
   const summary = useMemo(() => {
     if (!results) return null
-    const existsCount = results.filter((r) => r.exists === 'EXISTS').length
-    return { total: results.length, existsCount, notExistsCount: results.length - existsCount }
+    const availableCount = results.filter((r) => r.is_available === 'Available').length
+    const inMlosCount = results.filter((r) => r.reason === 'In MLOS').length
+    const reservedCount = results.filter((r) => r.reason === 'Reserved').length
+    return {
+      total: results.length,
+      availableCount,
+      notAvailableCount: results.length - availableCount,
+      inMlosCount,
+      reservedCount,
+    }
   }, [results])
 
   return (
@@ -175,8 +186,8 @@ export default function BatchUuidCheck() {
             )}
             {parsed.uuids.length > LARGE_BATCH_WARNING_THRESHOLD && (
               <div style={{ marginTop: 8, color: 'var(--color-warning)' }}>
-                {parsed.uuids.length.toLocaleString()} UUIDs is a large batch — the backend checks each one against the
-                database in turn, so this may take a while.
+                {parsed.uuids.length.toLocaleString()} UUIDs is a large batch — the backend checks each one in turn, so
+                this may take a while.
               </div>
             )}
           </div>
@@ -207,7 +218,7 @@ export default function BatchUuidCheck() {
 
       {checking && (
         <div style={{ color: 'var(--color-text-muted)', fontSize: 13, marginBottom: 20 }}>
-          Checking {parsed.uuids.length.toLocaleString()} UUIDs against the settlements table…
+          Checking {parsed.uuids.length.toLocaleString()} UUIDs…
         </div>
       )}
 
@@ -218,16 +229,16 @@ export default function BatchUuidCheck() {
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                 <StatCard label="Total checked" value={summary.total.toLocaleString()} accentColor="#2c5f9e" />
                 <StatCard
-                  label="Exists"
-                  value={summary.existsCount.toLocaleString()}
-                  accentColor="#0ca30c"
-                  hint={`${((summary.existsCount / summary.total) * 100).toFixed(1)}% of batch`}
+                  label="Available"
+                  value={summary.availableCount.toLocaleString()}
+                  accentColor={UUID_AVAILABILITY_COLORS.Available}
+                  hint={`${((summary.availableCount / summary.total) * 100).toFixed(1)}% of batch`}
                 />
                 <StatCard
-                  label="Not exists"
-                  value={summary.notExistsCount.toLocaleString()}
-                  accentColor="#d03b3b"
-                  hint={`${((summary.notExistsCount / summary.total) * 100).toFixed(1)}% of batch`}
+                  label="Not available"
+                  value={summary.notAvailableCount.toLocaleString()}
+                  accentColor={UUID_AVAILABILITY_COLORS['Not Available']}
+                  hint={`${summary.inMlosCount.toLocaleString()} in MLoS · ${summary.reservedCount.toLocaleString()} reserved`}
                 />
               </div>
               <button

@@ -1,6 +1,6 @@
 import type { SettlementCoverageCategory, VisitationStatus } from '../types/h2h'
 import type { ValidationStatus } from '../types/mlos'
-import type { ExistsStatus } from '../types/uuidChecker'
+import type { AvailabilityStatus } from '../types/uuidChecker'
 import type { AccessibilityStatus, ReachVisitationStatus } from '../types/reach'
 
 // Fallback for any category value that shows up in the data but isn't in a
@@ -85,18 +85,20 @@ export const VALIDATION_STATUS_COLORS: Record<ValidationStatus, string> = {
   'Not Validated': '#d03b3b',
 }
 
-// toolbox/apps/db_access/uuid_checker.py's Exists enum — a plain found/not-
-// found binary, so it sits on the same good/critical two-color scale as
-// coverage rather than needing a third "unknown" bucket (an unrecognized
+// toolbox/models/db/access_models.py's Availability enum — a plain available/
+// not-available binary, so it sits on the same good/critical two-color scale
+// as coverage rather than needing a third "unknown" bucket (an unrecognized
 // entry never reaches this map — it's filtered client-side before the
-// request goes out, see utils/uuidFile.ts).
-export const UUID_EXISTS_COLORS: Record<ExistsStatus, string> = {
-  EXISTS: '#0ca30c',
-  'NOT EXISTS': '#d03b3b',
+// request goes out, see utils/uuidFile.ts). Green = can be assigned to a new
+// settlement; red = cannot. Always paired with a ✓/✕ and a label, never
+// color alone.
+export const UUID_AVAILABILITY_COLORS: Record<AvailabilityStatus, string> = {
+  Available: '#0ca30c',
+  'Not Available': '#d03b3b',
 }
 
 // toolbox/triangulate/triangulate.py's `status` column — same binary shape
-// as UUID_EXISTS_COLORS above (no mop-up-dependent third state the way
+// as UUID_AVAILABILITY_COLORS above (no mop-up-dependent third state the way
 // H2H's day_{N}_cumm has), and now shares the campaign's VISITATION color
 // scheme directly (config.yaml -> REPORTING.VISITATION) rather than its own
 // values, so "Visited"/"Not Visited" read identically wherever they appear

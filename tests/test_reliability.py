@@ -879,10 +879,11 @@ class Health(unittest.TestCase):
         report, code = health.readiness()
         self.assertEqual((report['status'], code), ('ready', 200))
         self.assertEqual([c['name'] for c in report['checks']],
-                         ['jobs_db', 'logs_dir_writable', 'disk_free', 'postgis', 'reference_data'])
+                         ['jobs_db', 'logs_dir_writable', 'disk_free', 'warnings_not_errors', 'postgis',
+                          'reference_data'])
         self.assertEqual({c['name']: c['critical'] for c in report['checks']},
                          {'jobs_db': True, 'logs_dir_writable': True, 'disk_free': True,
-                          'postgis': False, 'reference_data': False})
+                          'warnings_not_errors': True, 'postgis': False, 'reference_data': False})
         for c in report['checks']:
             self.assertEqual(set(c), {'name', 'ok', 'critical', 'ms', 'detail'})
         self.assertGreaterEqual(report['uptime_seconds'], 0)
@@ -909,6 +910,57 @@ class Health(unittest.TestCase):
         detail = [c for c in health.readiness()[0]['checks'] if c['name'] == 'postgis'][0]['detail']
         self.assertNotIn('hunter2', detail)
         self.assertNotIn('second line', detail)
+
+    def test_warnings_check_passes_on_the_normal_filter_list(self):
+        self.assertTrue(health._check_warnings_not_errors()[0])
+
+    def test_warnings_check_fails_when_a_plain_warning_would_raise(self):
+        import warnings
+        saved = list(warnings.filters)
+        self.addCleanup(lambda: warnings.filters.__setitem__(slice(None), saved))
+        warnings.simplefilter('error')  # what a leaked or configured "-W error" looks like
+        ok, detail = health._check_warnings_not_errors()
+        self.assertFalse(ok)
+        self.assertIn('raised as errors', detail)
+        self.assertIn('restart the backend', detail)
+        # and the real consequence: the pandas warning from the canary is now an exception
+        with self.assertRaises(UserWarning):
+            warnings.warn('pandas only supports SQLAlchemy connectable', UserWarning)
+
+    def test_warnings_check_follows_filter_order_like_python_does(self):
+        import warnings
+        saved = list(warnings.filters)
+        self.addCleanup(lambda: warnings.filters.__setitem__(slice(None), saved))
+        warnings.simplefilter('error')
+        warnings.simplefilter('ignore')  # inserted later, so it is checked first and wins
+        self.assertTrue(health._check_warnings_not_errors()[0])
+
+    def test_warnings_check_ignores_errors_aimed_at_other_things(self):
+        import re
+        import warnings
+        saved = list(warnings.filters)
+        self.addCleanup(lambda: warnings.filters.__setitem__(slice(None), saved))
+        warnings.filterwarnings('error', category=DeprecationWarning)          # not a UserWarning
+        warnings.filterwarnings('error', message='something very specific')     # a different message
+        warnings.filterwarnings('error', module='some_other_package')           # a different module
+        self.assertTrue(health._check_warnings_not_errors()[0])
+
+    def test_warnings_check_reads_the_filters_without_changing_them(self):
+        import warnings
+        before = list(warnings.filters)
+        health._check_warnings_not_errors()
+        self.assertEqual(list(warnings.filters), before)
+
+    def test_a_raised_as_error_state_makes_the_instance_not_ready(self):
+        import warnings
+        saved = list(warnings.filters)
+        self.addCleanup(lambda: warnings.filters.__setitem__(slice(None), saved))
+        self.patch_checks(warnings_not_errors=health._check_warnings_not_errors)
+        warnings.simplefilter('error')
+        report, code = health.readiness()
+        self.assertEqual((report['status'], code), ('not_ready', 503))
+        broken = [c['name'] for c in report['checks'] if not c['ok']]
+        self.assertEqual(broken, ['warnings_not_errors'])
 
     def test_real_local_checks(self):
         # the three that don't need Postgres, against the real code
@@ -960,7 +1012,7 @@ class RouterFunctions(unittest.TestCase):
         self.assertEqual(table, {
             ('GET', '/jobs/summary'), ('GET', '/jobs/stats'), ('GET', '/jobs'), ('GET', '/incidents'),
             ('PATCH', '/incidents/{incident_id}'), ('GET', '/health'), ('GET', '/ready'),
-            ('GET', '/jobs/{job_id}/logs'), ('GET', '/upload-limit')})
+            ('GET', '/jobs/{job_id}/logs'), ('GET', '/upload-limit'), ('GET', '/jobs/report')})
         from toolbox.job_tracker.middleware import TOOL_ENDPOINTS
         tracked_paths = {path for (_, path) in TOOL_ENDPOINTS}
         for _, path in table:
@@ -1005,6 +1057,127 @@ class RouterFunctions(unittest.TestCase):
             self.assertEqual(json.loads(resp.body)['status'], 'not_ready')
         finally:
             health._CHECKS[:] = saved
+
+
+class ReportEndpoint(unittest.TestCase):
+    """GET /jobs/report: the downloadable PDF, built from the real store."""
+
+    def setUp(self):
+        reset()
+        import importlib
+        self.r = importlib.import_module('toolbox.job_tracker.router')
+        # Never probe a real PostGIS / config from a unit test: swap in instant fake checks.
+        self._saved_checks = list(health._CHECKS)
+        health._CHECKS[:] = [('jobs_db', True, lambda: (True, 'job history database readable')),
+                             ('postgis', False, lambda: (False, 'not reachable in tests'))]
+        self.addCleanup(lambda: health._CHECKS.__setitem__(slice(None), self._saved_checks))
+
+    @staticmethod
+    def _text(pdf_bytes):
+        import io
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        return len(reader.pages), '\n'.join(page.extract_text() for page in reader.pages)
+
+    def _seed(self):
+        now = datetime.now(UTC)
+        for n in range(8):
+            add_job(tool='reach', label='REACH', started=now - timedelta(days=n))
+        add_job(tool='h2h', label='H2H Validation', status='failed', category='code_error', error_type='KeyError',
+                tb='abc123', detail="KeyError: 'ward_code' not found", started=now - timedelta(days=1))
+        add_job(tool='h2h', label='H2H Validation', status='failed', category='user_input', started=now - timedelta(days=2))
+        # a job from before the 7-day window, and a canary run: neither belongs in the 7-day report
+        add_job(tool='reach', status='failed', category='code_error', error_type='OldError', started=now - timedelta(days=40))
+        add_job(tool='reach', status='failed', category='code_error', error_type='CanaryError', source='canary',
+                started=now - timedelta(days=1))
+
+    def test_default_is_thirty_days_and_is_a_pdf(self):
+        self._seed()
+        resp = self.r.jobs_report()  # the route's own default, not a value passed here
+        self.assertEqual(resp.media_type, 'application/pdf')
+        self.assertTrue(resp.body.startswith(b'%PDF'))
+        disposition = resp.headers['content-disposition']
+        self.assertIn('attachment', disposition)
+        self.assertIn('sda_toolbox_reliability_30d_', disposition)
+        self.assertTrue(disposition.endswith('.pdf"'))
+        pages, text = self._text(resp.body)
+        self.assertGreaterEqual(pages, 8)
+        self.assertIn('Reliability Report', text)
+        self.assertIn('Last 30 days', text)
+        self.assertIn('H2H Validation', text)
+
+    def test_window_decides_what_is_in_the_report(self):
+        self._seed()
+        resp7 = self.r.jobs_report(window='7d')
+        resp90 = self.r.jobs_report(window='90d')
+        self.assertIn('sda_toolbox_reliability_7d_', resp7.headers['content-disposition'])
+        _, text7 = self._text(resp7.body)
+        _, text90 = self._text(resp90.body)
+        self.assertIn('Last 7 days', text7)
+        self.assertIn('Last 90 days', text90)
+        # 7d = today and the 6 days before it: 7 reach runs + 1 counted h2h failure => 7 of 8; the 40-day-old failure is out
+        self.assertIn('87.5%', text7)
+        self.assertNotIn('OldError', text7)
+        self.assertNotIn('CanaryError', text7)  # canary runs never reach the failures list
+        # 90d: all 8 reach runs, the recent h2h failure and the 40-day-old one => 8 of 10
+        self.assertIn('80.0%', text90)
+
+    def test_empty_database_still_gives_a_report(self):
+        resp = self.r.jobs_report(window='30d')
+        pages, text = self._text(resp.body)
+        self.assertGreaterEqual(pages, 7)
+        self.assertIn('no success rate to report', text.replace('\n', ' '))
+        self.assertIn('No incidents were opened or resolved', text.replace('\n', ' '))
+
+    def test_a_broken_readiness_probe_does_not_break_the_report(self):
+        saved = health.readiness
+
+        def boom():
+            raise RuntimeError('probe exploded')
+        health.readiness = boom
+        try:
+            resp = self.r.jobs_report(window='7d')
+        finally:
+            health.readiness = saved
+        self.assertTrue(resp.body.startswith(b'%PDF'))
+        _, text = self._text(resp.body)
+        self.assertIn('could not be run', text.replace('\n', ' '))
+
+    def test_long_lists_continue_on_more_pages_and_odd_text_is_safe(self):
+        from toolbox.job_tracker import report
+        now = datetime.now(UTC)
+        tools = [{'tool': f't{i}', 'label': f'Tool {i}', 'total': 10, 'completed': 9, 'failed_counted': 1,
+                  'failed_excluded': 0, 'success_rate': 0.9, 'p95_ms': 1500, 'last_failure_at': now.isoformat(),
+                  'open_incident_id': None} for i in range(25)]
+        stats = {'window': {'from': (now - timedelta(days=29)).isoformat(), 'to': now.isoformat(), 'days': 30},
+                 'target': {'success_rate': 0.95},
+                 'overall': {'total': 250, 'completed': 225, 'failed_counted': 25, 'failed_excluded': 0,
+                             'success_rate': 0.9, 'p50_ms': 10, 'p95_ms': 20, 'mttr_seconds': None,
+                             'mttr_median_seconds': None, 'mttr_p90_seconds': None, 'resolved_incidents': 0,
+                             'open_incidents': 0},
+                 'by_tool': tools, 'by_category': [{'category': 'brand_new_kind', 'count': 3, 'counted': True}],
+                 'daily': [], 'top_causes': [{'traceback_hash': None, 'error_type': None,
+                                              'sample': 'sample \u2265 \u4e2d\u6587 \u201cquoted\u201d', 'tool': 'zzz',
+                                              'category': 'code_error', 'count': 1, 'last_seen': now.isoformat()}]}
+        pdf = report.build_report_pdf(stats, [], [], None, generated_at=now)
+        pages, text = self._text(pdf)
+        self.assertEqual(text.count('Reliability by tool, worst first'), 3)  # 25 tools / 11 per page
+        self.assertIn('brand new kind', text)
+        self.assertGreaterEqual(pages, 10)
+
+    def test_helpers_match_the_page_formatting(self):
+        from toolbox.job_tracker import report
+        self.assertEqual(report.format_pct(0.9612), '96.1%')
+        self.assertEqual(report.format_pct(None), '-')
+        self.assertEqual([report.format_seconds(v) for v in (45, 720, 5400, 90000)], ['45s', '12m', '1h 30m', '1d 1h'])
+        self.assertEqual([report.format_ms(v) for v in (800, 4300, 88000, 3700000)], ['800ms', '4.3s', '1m 28s', '1h 1m'])
+        self.assertEqual(report.format_day('2026-10-14T09:30:00+00:00'), '14 Oct 2026')
+        self.assertEqual(report.format_day('2026-10-14'), '14 Oct 2026')
+        self.assertEqual(report.format_day(None), '-')
+        overall = {'success_rate': 0.90}
+        self.assertIn('missed its 95% target by 5.0 points', report.verdict(overall, 0.95, 30))
+        self.assertIn('met its 95% target', report.verdict({'success_rate': 0.96}, 0.95, 30))
+
 
 if __name__ == '__main__':
     unittest.main()

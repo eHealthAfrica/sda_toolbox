@@ -1,8 +1,9 @@
-import type { SkippedState, TargetAreaRunSummary } from '../types/targetArea'
+import type { PlannedMatch, SkippedState, TargetAreaRunSummary } from '../types/targetArea'
 
 /**
  * Reads the X-TA-Summary response header of POST /ta/generate_ta:
- * {"states_run": ["Borno"], "skipped": [{"state": "Zamfara", "reason": "..."}]}.
+ * {"states_run": ["Borno"], "skipped": [{"state": "Zamfara", "reason": "..."}], "planned": {"requested": 40, "matched": 38}}
+ * (`planned` only when a planned list was uploaded).
  *
  * Anything unexpected, including a missing header, gives null so the page shows no states card rather than a
  * wrong one. Entries that are not well formed are left out; a state listed twice is shown once.
@@ -26,10 +27,23 @@ export function parseTargetAreaSummary(header: string | null): TargetAreaRunSumm
       seen.add(state)
       skipped.push({ state, reason: typeof reason === 'string' && reason.trim() !== '' ? reason : 'No reason was given' })
     }
-    return { statesRun, skipped }
+    return { statesRun, skipped, planned: readPlanned(record.planned) }
   } catch {
     return null
   }
+}
+
+function readPlanned(value: unknown): PlannedMatch | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const { requested, matched } = value as Record<string, unknown>
+  if (typeof requested !== 'number' || typeof matched !== 'number') return null
+  if (!Number.isFinite(requested) || !Number.isFinite(matched) || requested < 0 || matched < 0) return null
+  return { requested, matched: Math.min(matched, requested) }
+}
+
+/** True when a planned list was uploaded and some of its settlements were not found in the generated areas. */
+export function plannedShortfall(summary: TargetAreaRunSummary): number {
+  return summary.planned ? summary.planned.requested - summary.planned.matched : 0
 }
 
 function unique(values: string[]): string[] {

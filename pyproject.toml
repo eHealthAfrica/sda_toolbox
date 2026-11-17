@@ -72,3 +72,6 @@ dev = [
 # app doesn't silently lose its config the moment someone installs it a
 # different way.
 "toolbox.configs" = ["*.yaml", "*.json"]
+# The reliability PDF (job_tracker/report.py) draws the eHealth Africa logo, and
+# uses Open Sans when OpenSans-Regular.ttf / OpenSans-Bold.ttf are placed here.
+"toolbox.job_tracker" = ["assets/*.png", "assets/fonts/*.ttf"]
