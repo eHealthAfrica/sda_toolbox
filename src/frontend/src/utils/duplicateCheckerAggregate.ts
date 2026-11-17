@@ -86,6 +86,13 @@ export function uniqueFieldValues(records: DuplicateCheckerRecord[], field: 'sta
   return Array.from(values).sort((a, b) => a.localeCompare(b))
 }
 
+// True when at least one pair carries a source — i.e. 'Cross-reference source' was on and the file's
+// 'Source' column had values. When it is false the Source columns are left out of the table and download
+// instead of showing a column of blanks.
+export function hasSourceValues(records: DuplicateCheckerRecord[]): boolean {
+  return records.some((r) => Boolean(r.source1) || Boolean(r.source2))
+}
+
 // Distance formatting shared by the table and any tooltip that shows it —
 // null (missing/invalid coordinates, see types/duplicateChecker.ts) reads as
 // an em dash rather than "0m" or "NaN".

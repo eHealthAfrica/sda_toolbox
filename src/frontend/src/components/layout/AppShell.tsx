@@ -37,8 +37,11 @@ export type AppView =
   | 'mlos-ops'
   | 'uuid-checker'
   | 'reach'
+  | 'device-tracking'
   | 'contact-analysis'
   | 'target-area'
+  | 'target-area-buffer'
+  | 'campaign-checkout'
   | 'microplan-combine'
   | 'microplan-validate'
   | 'microplan-merger'
@@ -48,6 +51,7 @@ export type AppView =
   | 'compiler-lga-data'
   | 'daily-report'
   | 'post-implementation'
+  | 'reliability'
 
 interface NavItemConfig {
   view: AppView
@@ -171,6 +175,18 @@ const NAV_GROUPS: NavGroupConfig[] = [
         ),
       },
       {
+        view: 'device-tracking',
+        label: 'Team & Device Tracking',
+        badge: 'new',
+        icon: (
+          <svg viewBox="0 0 16 16" fill="none">
+            <rect x="4.5" y="1.5" width="7" height="13" rx="1.6" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M7 12.2h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            <path d="M6.2 5.2c.5-.9 1.1-1.3 1.8-1.3s1.3.4 1.8 1.3M6.8 7.4c.3-.5.7-.8 1.2-.8s.9.3 1.2.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+      {
         view: 'contact-analysis',
         label: 'Contact Analysis',
         icon: (
@@ -197,6 +213,27 @@ const NAV_GROUPS: NavGroupConfig[] = [
               strokeWidth="1.3"
               strokeLinejoin="round"
             />
+          </svg>
+        ),
+      },
+      {
+        view: 'target-area-buffer',
+        label: 'Target Area · Buffer',
+        icon: (
+          <svg viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="2.4" stroke="currentColor" strokeWidth="1.3" />
+            <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.3" strokeDasharray="1.5 1.7" />
+          </svg>
+        ),
+      },
+      {
+        view: 'campaign-checkout',
+        label: 'Checkout Update',
+        badge: 'new',
+        icon: (
+          <svg viewBox="0 0 16 16" fill="none">
+            <path d="M8 1.5v8M4.8 6.8L8 10l3.2-3.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M2 10.5v2.2c0 .7.6 1.3 1.3 1.3h9.4c.7 0 1.3-.6 1.3-1.3v-2.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
           </svg>
         ),
       },
@@ -329,6 +366,21 @@ const NAV_GROUPS: NavGroupConfig[] = [
               stroke="currentColor"
               strokeWidth="1.4"
             />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    label: 'Operations',
+    items: [
+      {
+        view: 'reliability',
+        label: 'Reliability',
+        badge: 'new',
+        icon: (
+          <svg viewBox="0 0 16 16" fill="none">
+            <path d="M1.5 8.5h3l1.8-4.5 3 8 1.9-3.5h2.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         ),
       },

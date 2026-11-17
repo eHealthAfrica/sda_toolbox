@@ -2,7 +2,7 @@ import type { TrackingFormInput } from '../types/h2h'
 import type { QcFormInput } from '../types/mlos'
 import type { UuidCheckResult } from '../types/uuidChecker'
 import type { ReachFormInput } from '../types/reach'
-import type { TargetAreaFormInput } from '../types/targetArea'
+import type { TargetAreaFormInput, BufferTargetAreaFormInput, TargetAreaResponse } from '../types/targetArea'
 import type { FixerFormInput, StandardizeFormInput, UpdateValidationFormInput } from '../types/mlosOps'
 import type { DipExpansion } from '../types/microplan'
 import type { StateName } from '../types/h2h'
@@ -11,18 +11,34 @@ import type { DailyReportFormInput, DailyPostReport } from '../types/dailyReport
 import type { JobRow, JobsSummary } from '../types/jobs'
 import type { ContactAnalysisFormInput } from '../types/contactAnalysis'
 import type { PostImplementationFormInput, PostReport } from '../types/postImplementation'
+import type { DeviceTrackingFormInput } from '../types/deviceTracking'
+import type { Incident, IncidentPatch, IncidentStatus, JobsStats, ReadyReport, StatsWindow } from '../types/reliability'
+import type { JobLogsResponse } from '../types/jobLogs'
+import { jobIdHeaders } from '../utils/jobLogs'
+import { readableBody, readableMessage } from '../utils/apiErrorText'
+import type { CheckoutFormInput, CheckoutResponse } from '../types/checkout'
+import { parseCheckoutSummary } from '../utils/checkout'
+import { parseTargetAreaSummary } from '../utils/targetAreaRun'
+import {
+  LARGE_UPLOAD_BYTES, UPLOAD_LIMIT_CHECK_ENABLED, formDataBytes, largeUploadFailedMessage, limitFromBody, uploadTooLargeBody,
+} from '../utils/uploadLimit'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 
 export class ApiError extends Error {
   status: number
+  // What the tool pages show after the message. Empty when the message already
+  // says everything (see throwIfNotOk), so the raw JSON is not shown twice.
   detail: unknown
+  // The response body exactly as the backend sent it.
+  body: unknown
 
-  constructor(message: string, status: number, detail: unknown) {
+  constructor(message: string, status: number, detail: unknown, body: unknown = detail) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.detail = detail
+    this.body = body
   }
 }
 
@@ -34,7 +50,67 @@ async function throwIfNotOk(response: Response): Promise<void> {
   } catch {
     detail = await response.text().catch(() => null)
   }
+  // A data check failure or a tool exception: say what is wrong in plain words
+  // rather than printing the JSON. `detail` is left empty because the pages
+  // append it after the message; the untouched body stays on `error.body`.
+  const readable = readableBody(detail)
+  if (readable) {
+    throw new ApiError(readableMessage(readable), response.status, '', detail)
+  }
   throw new ApiError(`Request failed with status ${response.status}`, response.status, detail)
+}
+
+// The largest request the API accepts (GET /upload-limit), asked for once and remembered. A failed or
+// unanswered lookup is not remembered, so the next upload asks again; it never delays an upload for long.
+let uploadLimitRequest: Promise<number | null> | null = null
+
+function getUploadLimitBytes(): Promise<number | null> {
+  if (!uploadLimitRequest) {
+    const request: Promise<number | null> = fetch(`${API_BASE_URL}/upload-limit`, { signal: AbortSignal.timeout(3000) })
+      .then((response) => (response.ok ? response.json() : null))
+      .then(limitFromBody)
+      .catch(() => null)
+    uploadLimitRequest = request
+    void request.then((limit) => {
+      if (limit === null && uploadLimitRequest === request) uploadLimitRequest = null
+    })
+  }
+  return uploadLimitRequest
+}
+
+function uploadTooLarge(limitBytes: number, sizeBytes: number): ApiError {
+  const body = uploadTooLargeBody(limitBytes, sizeBytes)
+  const readable = readableBody(body)
+  return new ApiError(readable ? readableMessage(readable) : body.msg, 413, '', body)
+}
+
+/**
+ * fetch() for every call in this file. While UPLOAD_LIMIT_CHECK_ENABLED is false (the current setting) this
+ * is plain fetch(). When it is on, a request that uploads files is checked against the API's size
+ * limit first, so a file that is too big is refused with the server's own wording instead of after a
+ * long upload. If the server drops the connection mid-upload (the browser then reports only "Failed to
+ * fetch") the limit is checked again so the reason is still shown. Everything else is plain fetch().
+ */
+async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+  // The upload size check is switched off (see UPLOAD_LIMIT_CHECK_ENABLED): no lookup, no refusal.
+  if (!UPLOAD_LIMIT_CHECK_ENABLED) return fetch(url, init)
+
+  const uploadBytes = init?.body instanceof FormData ? formDataBytes(init.body) : 0
+  if (uploadBytes === 0) return fetch(url, init)
+
+  const limit = await getUploadLimitBytes()
+  if (limit !== null && uploadBytes > limit) throw uploadTooLarge(limit, uploadBytes)
+
+  try {
+    return await fetch(url, init)
+  } catch (error) {
+    if (error instanceof TypeError) {
+      const knownLimit = limit ?? (await getUploadLimitBytes())
+      if (knownLimit !== null && uploadBytes > knownLimit) throw uploadTooLarge(knownLimit, uploadBytes)
+      if (uploadBytes >= LARGE_UPLOAD_BYTES) throw new Error(largeUploadFailedMessage(uploadBytes))
+    }
+    throw error
+  }
 }
 
 export interface H2HTrackingResponse {
@@ -81,7 +157,7 @@ export async function submitH2HTracking(input: TrackingFormInput): Promise<H2HTr
   // state column), the same auto-detect behavior the old empty-selection
   // default already relied on, so this endpoint no longer takes a states
   // input at all.
-  const response = await fetch(`${API_BASE_URL}/tracking/gridded`, {
+  const response = await apiFetch(`${API_BASE_URL}/tracking/gridded`, {
     method: 'POST',
     body: formData,
   })
@@ -103,7 +179,7 @@ export async function submitH2HTracking(input: TrackingFormInput): Promise<H2HTr
  * if never claimed (toolbox/apps/tracking/h2h_cache.py's TTL_SECONDS).
  */
 export async function fetchH2HArchive(jobId: string): Promise<Blob> {
-  const response = await fetch(`${API_BASE_URL}/tracking/gridded/archive/${jobId}`)
+  const response = await apiFetch(`${API_BASE_URL}/tracking/gridded/archive/${jobId}`)
   await throwIfNotOk(response)
   return response.blob()
 }
@@ -128,7 +204,7 @@ export async function fetchH2HArchive(jobId: string): Promise<Blob> {
  * original run had generate_report=false.
  */
 export async function fetchH2HReports(jobId: string): Promise<DailyPostReport[]> {
-  const response = await fetch(`${API_BASE_URL}/tracking/gridded/reports/${jobId}`)
+  const response = await apiFetch(`${API_BASE_URL}/tracking/gridded/reports/${jobId}`)
   await throwIfNotOk(response)
   return response.json()
 }
@@ -168,7 +244,7 @@ export async function submitMlosQC(input: QcFormInput): Promise<Blob> {
   params.append('consistency', String(input.consistency))
   params.append('deep_search', String(input.deepSearch))
 
-  const response = await fetch(`${API_BASE_URL}/qc/validation?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/qc/validation?${params.toString()}`, {
     method: 'POST',
     body: formData,
   })
@@ -184,18 +260,8 @@ export async function submitMlosQC(input: QcFormInput): Promise<Blob> {
  * param with no File()/Form()/Query() annotation on an endpoint that also
  * has an UploadFile param — same repo convention documented throughout this
  * file (see submitMlosQC above) — so it's a Query param on the URL, not part
- * of the FormData body.
- *
- * NOTE for whoever next touches the backend route: duplicate_checker.py
- * calls `duplicate_deep_search_protocol(settlement_data, 'ward', unique_code,
- * geom, 'mapping')`, but that function's real signature (deep_search.py) is
- * `(dataset, unique_admin_col, threshold, geom_cols, output)` — the literal
- * string 'ward' is passed where `unique_admin_col` is expected, and
- * `unique_code` (a column name) where the numeric `threshold` is expected.
- * That looks like an argument-order slip that could mean this `threshold`
- * query param never actually reaches the similarity check. Flagging this
- * here rather than fixing it — this file only calls the route as it's
- * actually written; the mismatch is in backend code this app doesn't own.
+ * of the FormData body. `cross_reference_source` is a second bare scalar
+ * (`bool`, no default — required) and is a Query param for the same reason.
  *
  * Returns the raw CSV response as a Blob (FileResponse, media_type
  * "text/csv") — parse it with src/api/parseResult.ts::parseDuplicateCheckerCsv.
@@ -204,7 +270,11 @@ export async function submitMlosQC(input: QcFormInput): Promise<Blob> {
  * whatever columns the uploaded file used, unlike most other MLoS endpoints
  * in this file.
  */
-export async function submitDuplicateChecker(settlementsFile: File, threshold: number): Promise<Blob> {
+export async function submitDuplicateChecker(
+  settlementsFile: File,
+  threshold: number,
+  crossReferenceSource: boolean,
+): Promise<Blob> {
   if (!settlementsFile) {
     throw new Error('A settlement list file is required.')
   }
@@ -214,8 +284,9 @@ export async function submitDuplicateChecker(settlementsFile: File, threshold: n
 
   const params = new URLSearchParams()
   params.append('threshold', String(threshold))
+  params.append('cross_reference_source', String(crossReferenceSource))
 
-  const response = await fetch(`${API_BASE_URL}/duplicate-deep-search/?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/duplicate-deep-search/?${params.toString()}`, {
     method: 'POST',
     body: formData,
   })
@@ -291,7 +362,7 @@ export async function submitCoordinateReview(settlementsFile: File, sourcesFile:
   const params = new URLSearchParams()
   params.append('use_osm', String(useOsm))
 
-  const response = await fetch(`${API_BASE_URL}/coordinate_review?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/coordinate_review?${params.toString()}`, {
     method: 'POST',
     body: formData,
   })
@@ -312,9 +383,11 @@ export async function submitCoordinateReview(settlementsFile: File, sourcesFile:
  *
  * Returns a ZIP of GeoPackage (SQLite) layers, not CSV/JSON — parse it with
  * src/api/parseResult.ts::parseTargetAreaZip (uses src/utils/gpkg.ts, a
- * sql.js-based reader, since GeoPackage is binary SQLite, not text).
+ * sql.js-based reader, since GeoPackage is binary SQLite, not text) — plus
+ * `summary`, read from the X-TA-Summary header: the states that ran and the
+ * states that were skipped with the reason for each.
  */
-export async function submitGenerateTA(input: TargetAreaFormInput): Promise<Blob> {
+export async function submitGenerateTA(input: TargetAreaFormInput): Promise<TargetAreaResponse> {
   if (!input.mlosFile) {
     throw new Error('A master list of settlements (MLoS) file is required.')
   }
@@ -324,7 +397,50 @@ export async function submitGenerateTA(input: TargetAreaFormInput): Promise<Blob
   if (input.plannedListFile) formData.append('planned_list', input.plannedListFile)
   if (input.identifier) formData.append('identifier', input.identifier)
 
-  const response = await fetch(`${API_BASE_URL}/ta/generate_ta`, {
+  const response = await apiFetch(`${API_BASE_URL}/ta/generate_ta`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  await throwIfNotOk(response)
+  // X-TA-Summary says which states ran and which were skipped (and why); the zip only holds the ones that ran.
+  const summary = parseTargetAreaSummary(response.headers.get('X-TA-Summary'))
+  return { blob: await response.blob(), summary }
+}
+
+/**
+ * Calls POST /ta/generate_ta/buffer (toolbox/apps/campaign/target_area.py::
+ * generate_buffer_based_ta — the "buffer strategy" TA generator, used for
+ * RES/RIC and Nomadic vaccination activities). `planned_settlement_list` is
+ * a bare `UploadFile` (required multipart form field). `buffer_distance` is
+ * a plain `int = 200` on the backend with no `Form(...)` wrapper, so —
+ * unlike `identifier` on /ta/generate_ta above — it does NOT go in the
+ * multipart body; it rides the URL query string instead, same pattern as
+ * `use_osm` on submitCoordinateReview above. The backend itself rejects
+ * anything outside 100–400 (raises DataError), so this validates the same
+ * bound client-side first to fail fast without a round trip.
+ *
+ * Returns a ZIP of the same two GeoPackage layer names (`voronoi`,
+ * `gridded_ta`) /ta/generate_ta's base run returns — no subset variants,
+ * since there's only one input file here — so it can be parsed with the
+ * exact same batched reader: src/api/parseResult.ts::openTargetAreaZip via
+ * src/utils/targetAreaBatchLoader.ts::loadTargetAreaInBatches.
+ */
+export async function submitGenerateBufferTA(input: BufferTargetAreaFormInput): Promise<Blob> {
+  if (!input.plannedSettlementListFile) {
+    throw new Error('A planned settlement list file is required.')
+  }
+  if (input.bufferDistance < 100 || input.bufferDistance > 400) {
+    throw new Error('Buffer distance must be between 100 and 400 metres.')
+  }
+
+  const formData = new FormData()
+  formData.append('planned_settlement_list', input.plannedSettlementListFile)
+
+  const params = new URLSearchParams()
+  params.append('buffer_distance', String(input.bufferDistance))
+
+  const response = await apiFetch(`${API_BASE_URL}/ta/generate_ta/buffer?${params.toString()}`, {
     method: 'POST',
     body: formData,
   })
@@ -349,7 +465,7 @@ export async function submitStandardizeMlos(input: StandardizeFormInput): Promis
   const formData = new FormData()
   formData.append('mlos_file_path', input.mlosFile)
 
-  const response = await fetch(`${API_BASE_URL}/qc/standardize`, {
+  const response = await apiFetch(`${API_BASE_URL}/qc/standardize`, {
     method: 'POST',
     body: formData,
   })
@@ -386,7 +502,7 @@ export async function submitFixer(input: FixerFormInput): Promise<Blob> {
   params.append('duplicate_check', String(input.duplicateCheck))
   if (input.state) params.append('state', input.state)
 
-  const response = await fetch(`${API_BASE_URL}/qc/fixer?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/qc/fixer?${params.toString()}`, {
     method: 'PATCH',
     body: formData,
   })
@@ -426,7 +542,7 @@ export async function submitUpdateValidation(input: UpdateValidationFormInput): 
   const params = new URLSearchParams()
   params.append('purpose', input.purpose)
 
-  const response = await fetch(`${API_BASE_URL}/mlos/validation?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/mlos/validation?${params.toString()}`, {
     method: 'PATCH',
     body: formData,
   })
@@ -442,7 +558,7 @@ export async function submitUpdateValidation(input: UpdateValidationFormInput): 
  */
 export async function checkUuid(uuid: string): Promise<UuidCheckResult> {
   const params = new URLSearchParams({ uuid })
-  const response = await fetch(`${API_BASE_URL}/uuid_check?${params.toString()}`)
+  const response = await apiFetch(`${API_BASE_URL}/uuid_check?${params.toString()}`)
   await throwIfNotOk(response)
   return response.json()
 }
@@ -457,7 +573,7 @@ export async function checkUuid(uuid: string): Promise<UuidCheckResult> {
  * field), which we unwrap here.
  */
 export async function checkUuidBatch(uuids: string[]): Promise<UuidCheckResult[]> {
-  const response = await fetch(`${API_BASE_URL}/uuid_batch_checker`, {
+  const response = await apiFetch(`${API_BASE_URL}/uuid_batch_checker`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(uuids),
@@ -474,7 +590,7 @@ export async function checkUuidBatch(uuids: string[]): Promise<UuidCheckResult[]
  * state/jobTracker.tsx counts, so it survives a page reload.
  */
 export async function fetchJobsSummary(): Promise<JobsSummary> {
-  const response = await fetch(`${API_BASE_URL}/jobs/summary`)
+  const response = await apiFetch(`${API_BASE_URL}/jobs/summary`)
   await throwIfNotOk(response)
   return response.json()
 }
@@ -485,10 +601,93 @@ export async function fetchJobsSummary(): Promise<JobsSummary> {
  */
 export async function fetchRecentJobs(limit = 8): Promise<JobRow[]> {
   const params = new URLSearchParams({ limit: String(limit) })
-  const response = await fetch(`${API_BASE_URL}/jobs?${params.toString()}`)
+  const response = await apiFetch(`${API_BASE_URL}/jobs?${params.toString()}`)
   await throwIfNotOk(response)
   const data: { jobs: JobRow[] } = await response.json()
   return data.jobs
+}
+
+/**
+ * Calls GET /jobs?status=failed (toolbox/job_tracker/router.py, extended with
+ * a `status` filter per the Reliability spec) — the newest failed jobs, for
+ * the Reliability page's "Recent failures" table. A backend without the
+ * filter ignores it and returns the newest jobs of any status, so rows are
+ * filtered again here.
+ */
+export async function fetchFailedJobs(limit = 15): Promise<JobRow[]> {
+  const params = new URLSearchParams({ limit: String(limit), status: 'failed' })
+  const response = await apiFetch(`${API_BASE_URL}/jobs?${params.toString()}`)
+  await throwIfNotOk(response)
+  const data: { jobs: JobRow[] } = await response.json()
+  return data.jobs.filter((job) => job.status === 'failed')
+}
+
+/**
+ * Calls GET /jobs/stats (Reliability spec): success rate against the 95%
+ * target, MTTR, per-tool table, failure categories, a daily series and the
+ * most common crash causes over the chosen window. Rejects with ApiError
+ * (status 404) on a backend that has not been upgraded yet.
+ */
+export async function fetchJobsStats(window: StatsWindow = '30d'): Promise<JobsStats> {
+  const params = new URLSearchParams({ window })
+  const response = await apiFetch(`${API_BASE_URL}/jobs/stats?${params.toString()}`)
+  await throwIfNotOk(response)
+  return response.json()
+}
+
+/**
+ * Calls GET /incidents (Reliability spec), newest first. `status` is
+ * open | acknowledged | resolved | all.
+ */
+export async function fetchIncidents(status: IncidentStatus | 'all' = 'all', limit = 100): Promise<Incident[]> {
+  const params = new URLSearchParams({ status, limit: String(limit) })
+  const response = await apiFetch(`${API_BASE_URL}/incidents?${params.toString()}`)
+  await throwIfNotOk(response)
+  const data: { incidents: Incident[] } = await response.json()
+  return data.incidents
+}
+
+/**
+ * Calls PATCH /incidents/{id} (Reliability spec) to acknowledge or resolve an
+ * incident, change its severity, or attach a resolution note / runbook slug.
+ * Resolving requires a non-empty `resolution` (the backend answers 422
+ * otherwise). Returns the updated incident.
+ */
+export async function patchIncident(id: string, patch: IncidentPatch): Promise<Incident> {
+  const response = await apiFetch(`${API_BASE_URL}/incidents/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  await throwIfNotOk(response)
+  return response.json()
+}
+
+/**
+ * Calls GET /ready (Reliability spec). The backend answers 503 when a
+ * critical check fails but still sends the JSON report, so a 503 is returned
+ * as data rather than thrown; any other non-OK status (404 on a backend
+ * without the route) rejects with ApiError.
+ */
+export async function fetchReady(): Promise<ReadyReport> {
+  const response = await apiFetch(`${API_BASE_URL}/ready`)
+  if (response.status !== 503) await throwIfNotOk(response)
+  return response.json()
+}
+
+/**
+ * Calls GET /jobs/{jobId}/logs?after=N (proposed in the Reliability spec,
+ * section "Live job logs"): log lines for a running or finished job with a
+ * sequence number above `after`. `jobId` is the id the browser generated and
+ * sent in the X-Client-Job-Id request header. An id the backend has not seen
+ * yet answers 200 with status 'unknown' and no lines; a 404 means the backend
+ * has no such route at all (ApiError, status 404).
+ */
+export async function fetchJobLogs(jobId: string, after = 0): Promise<JobLogsResponse> {
+  const params = new URLSearchParams({ after: String(after) })
+  const response = await apiFetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/logs?${params.toString()}`)
+  await throwIfNotOk(response)
+  return response.json()
 }
 
 /**
@@ -503,7 +702,7 @@ export async function fetchRecentJobs(limit = 8): Promise<JobRow[]> {
  * Returns the raw CSV response as a Blob (FileResponse, media_type
  * "text/csv") — not a ZIP, parse it with src/api/parseResult.ts::parseReachCsv.
  */
-export async function submitReachAnalysis(input: ReachFormInput): Promise<Blob> {
+export async function submitReachAnalysis(input: ReachFormInput, clientJobId?: string): Promise<Blob> {
   if (!input.plannedSettlementsFile) {
     throw new Error('A planned settlements file is required.')
   }
@@ -519,8 +718,10 @@ export async function submitReachAnalysis(input: ReachFormInput): Promise<Blob> 
   const params = new URLSearchParams()
   params.append('method', input.method)
 
-  const response = await fetch(`${API_BASE_URL}/validation?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/validation?${params.toString()}`, {
     method: 'POST',
+    // Only carries the live-log job id when VITE_JOB_LOGS=true; otherwise {}.
+    headers: jobIdHeaders(clientJobId),
     body: formData,
   })
 
@@ -559,7 +760,7 @@ export async function submitCombineDmpFiles(dmpFiles: File, dip: DipExpansion): 
   const params = new URLSearchParams()
   params.append('dip', dip)
 
-  const response = await fetch(`${API_BASE_URL}/aggregator/dmp/combine?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/aggregator/dmp/combine?${params.toString()}`, {
     method: 'POST',
     body: formData,
   })
@@ -591,7 +792,7 @@ export async function submitValidateDip(settlementsFile: File, teamAllocationFil
   formData.append('settlements_file', settlementsFile)
   formData.append('team_allocation_file', teamAllocationFile)
 
-  const response = await fetch(`${API_BASE_URL}/dip/validator`, {
+  const response = await apiFetch(`${API_BASE_URL}/dip/validator`, {
     method: 'POST',
     body: formData,
   })
@@ -642,7 +843,7 @@ export async function submitDipMapMerger(
   if (state) params.append('state', state)
   const query = params.toString() ? `?${params.toString()}` : ''
 
-  const response = await fetch(`${API_BASE_URL}/dip/merger${query}`, {
+  const response = await apiFetch(`${API_BASE_URL}/dip/merger${query}`, {
     method: 'POST',
     body: formData,
   })
@@ -705,7 +906,7 @@ export async function submitDipGenerator(
     formData.append('team_allocation_file', teamAllocationFile)
   }
 
-  const response = await fetch(`${API_BASE_URL}/dip/generator`, {
+  const response = await apiFetch(`${API_BASE_URL}/dip/generator`, {
     method: 'POST',
     body: formData,
   })
@@ -752,7 +953,7 @@ export async function submitCombineTracks(input: TracksFormInput): Promise<Blob>
   for (const state of input.states) params.append('states', state)
   params.append('remove_invalid_tracks', String(input.removeInvalidTracks))
 
-  const response = await fetch(`${API_BASE_URL}/compiler/tracks?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/compiler/tracks?${params.toString()}`, {
     method: 'POST',
     body: formData,
   })
@@ -765,12 +966,13 @@ export async function submitCombineTracks(input: TracksFormInput): Promise<Blob>
  * Calls POST /compiler/disaggregate (toolbox/apps/aggregators/splitter.py::
  * disaggregate_mlos). `mlos_file` is the only UploadFile; `level` has no
  * Form()/Query() annotation, so it's a Query param like the others above.
+ * `level` is Literal['State', 'LGA', 'Ward'] on the backend.
  *
- * Returns a single .xlsx workbook as a Blob (one sheet per LGA or per Ward,
+ * Returns a single .xlsx workbook as a Blob (one sheet per State, LGA or Ward,
  * not zipped) — read it client-side with the `xlsx` package directly
  * (workbook.SheetNames + sheet_to_json per sheet).
  */
-export async function submitDisaggregateMlos(mlosFile: File, level: 'LGA' | 'Ward'): Promise<Blob> {
+export async function submitDisaggregateMlos(mlosFile: File, level: 'State' | 'LGA' | 'Ward'): Promise<Blob> {
   if (!mlosFile) {
     throw new Error('A Master List of Settlements file is required.')
   }
@@ -781,7 +983,7 @@ export async function submitDisaggregateMlos(mlosFile: File, level: 'LGA' | 'War
   const params = new URLSearchParams()
   params.append('level', level)
 
-  const response = await fetch(`${API_BASE_URL}/compiler/disaggregate?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/compiler/disaggregate?${params.toString()}`, {
     method: 'POST',
     body: formData,
   })
@@ -823,7 +1025,7 @@ export async function submitCombineLgaData(lgaFile: File, fileExtension: string 
   if (state) params.append('state', state)
   const query = params.toString() ? `?${params.toString()}` : ''
 
-  const response = await fetch(`${API_BASE_URL}/compiler/lga_data${query}`, {
+  const response = await apiFetch(`${API_BASE_URL}/compiler/lga_data${query}`, {
     method: 'POST',
     body: formData,
   })
@@ -870,7 +1072,7 @@ export async function submitDailyReport(input: DailyReportFormInput): Promise<Da
   params.append('campaign_day_col', input.campaignDayCol.trim())
   params.append('coverage_col', input.coverageCol.trim())
 
-  const response = await fetch(`${API_BASE_URL}/reports/daily?${params.toString()}`, {
+  const response = await apiFetch(`${API_BASE_URL}/reports/daily?${params.toString()}`, {
     method: 'POST',
     body: formData,
   })
@@ -910,7 +1112,7 @@ export async function submitPostImplementationReport(input: PostImplementationFo
   formData.append('settlement_list', input.settlementFile)
   formData.append('report_col', input.reportCol.trim())
 
-  const response = await fetch(`${API_BASE_URL}/reports/post`, {
+  const response = await apiFetch(`${API_BASE_URL}/reports/post`, {
     method: 'POST',
     body: formData,
   })
@@ -942,11 +1144,85 @@ export async function submitContactAnalysis(input: ContactAnalysisFormInput): Pr
   formData.append('base_file', input.baseFile)
   formData.append('previous_campaign_file', input.previousCampaignFile)
 
-  const response = await fetch(`${API_BASE_URL}/contact_analysis`, {
+  const response = await apiFetch(`${API_BASE_URL}/contact_analysis`, {
     method: 'POST',
     body: formData,
   })
 
   await throwIfNotOk(response)
   return response.blob()
+}
+
+/**
+ * Calls POST /tracking/devices (toolbox/apps/tracking/tracks_analysis.py::
+ * gts_device_tracking). `tracks_file` and the optional `vaccine_buddy_mapping`
+ * are UploadFile params, so they go in the multipart body. `activity_code` is
+ * a bare `str` scalar with no Form()/Query() wrapper, which — same convention
+ * as every other endpoint in this app (see submitReachAnalysis's `method`) —
+ * FastAPI routes to the query string. It is ALSO appended to the form body:
+ * the backend ignores whichever copy it isn't reading, so the call keeps
+ * working if that parameter is ever wrapped in Form().
+ *
+ * Returns the raw CSV response as a Blob (one row per team code + IMEI +
+ * day) — parse it with src/api/parseResult.ts::parseDeviceTrackingCsv.
+ */
+export async function submitDeviceTracking(input: DeviceTrackingFormInput, clientJobId?: string): Promise<Blob> {
+  if (!input.tracksFile) {
+    throw new Error('A GTS tracks file is required.')
+  }
+  const activityCode = input.activityCode.trim()
+  if (!activityCode) {
+    throw new Error('An activity (campaign) code is required, e.g. IBRA1.')
+  }
+
+  const formData = new FormData()
+  formData.append('tracks_file', input.tracksFile)
+  if (input.vaccineBuddyFile) formData.append('vaccine_buddy_mapping', input.vaccineBuddyFile)
+  formData.append('activity_code', activityCode)
+
+  const params = new URLSearchParams()
+  params.append('activity_code', activityCode)
+
+  const response = await apiFetch(`${API_BASE_URL}/tracking/devices?${params.toString()}`, {
+    method: 'POST',
+    // Only carries the live-log job id when VITE_JOB_LOGS=true; otherwise {}.
+    headers: jobIdHeaders(clientJobId),
+    body: formData,
+  })
+
+  await throwIfNotOk(response)
+  return response.blob()
+}
+
+/**
+ * Calls POST /campaign/checkout (toolbox/apps/planfeld/checkout.py::update_checkout): brings a versioned
+ * SpatiaLite checkout up to date with a new MLoS. Multipart fields: `settlement` (the MLoS), `db_checkout`
+ * (the current checkout database) and `new_takeoff` (coordinates for takeoff points that are new).
+ *
+ * The response body is the updated database. Two optional response headers add to it:
+ * `X-Checkout-Summary` (the counts shown on the Checkout page, see utils/checkout.ts) and `X-Data-Warning`. Both have to be
+ * listed in sda_toolbox.py's CORS `expose_headers` for the browser to let this code read them; without that
+ * they read as null and the page just shows the download.
+ */
+export async function submitCheckoutUpdate(input: CheckoutFormInput): Promise<CheckoutResponse> {
+  if (!input.settlementFile) throw new Error('The new MLoS (settlement list) is required.')
+  if (!input.checkoutFile) throw new Error('The current checkout database is required.')
+
+  const formData = new FormData()
+  formData.append('settlement', input.settlementFile)
+  formData.append('db_checkout', input.checkoutFile)
+  if (input.takeoffFile) formData.append('new_takeoff', input.takeoffFile)
+
+  const response = await apiFetch(`${API_BASE_URL}/campaign/checkout`, {
+    method: 'POST',
+    body: formData,
+  })
+
+  await throwIfNotOk(response)
+  const blob = await response.blob()
+  return {
+    blob,
+    summary: parseCheckoutSummary(response.headers.get('X-Checkout-Summary')),
+    warning: response.headers.get('X-Data-Warning'),
+  }
 }

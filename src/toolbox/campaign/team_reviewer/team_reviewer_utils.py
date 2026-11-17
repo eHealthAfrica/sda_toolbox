@@ -4,9 +4,11 @@ import re
 
 import pandas as pd
 import geopandas as gpd
+from shapely.geometry import Point
 from geopy.distance import geodesic
 
 from toolbox.tools import is_empty
+from toolbox.access.read import ReadDBData
 
 
 def create_unique_field(tracks_data: gpd.GeoDataFrame) -> pd.DataFrame:
@@ -119,10 +121,12 @@ def daily_team_analysis(location: int, grouper: tuple[str, datetime], group_trac
     duration: timedelta = end_time - start_time
     duration_mins: float = duration.total_seconds() / 60
     distance = covered_distance(group_tracks)
+    area = coverage_area(group_tracks)
     device_flag: str | None = flag_tracks_duration_ratio(track_count, duration_mins)
     work_rate_flag = work_indicators_assessment(distance, duration_mins)
     return {
-        location: [team_code, analysis_date, track_count, start_time, end_time, duration_mins, distance, device_flag, work_rate_flag]
+        location: [team_code, analysis_date, track_count, start_time, end_time, duration_mins, distance, area,
+                   device_flag, work_rate_flag]
     }
 
 
@@ -144,10 +148,13 @@ def separate_code_imei(tracks_data: pd.DataFrame) -> pd.DataFrame:
     return tracks_data
 
 
-def team_code_review(row):
+def team_code_review(row: pd.Series, campaign_code: str):
     team_code: str = row['team_code']
-    team_code = team_code.replace(' ', '').replace('-', '').replace("//", '/')
-    team_code_pattern = r'^[A-Z]{2,4}/[A-Z0-9.-]{2,5}/[A-Z0-9.-]{2,5}/(?:[A-Z0-9.-]+/)*\d{3}$'
+    if pd.isnull(team_code):
+        return None
+
+    campaign_code = campaign_code.upper()
+    team_code_pattern = r'^[A-Z]{2}-[A-Z0-9]{3}-[A-Z0-9]{3,4}-' + re.escape(campaign_code) + r'-\d{3}$'
     match = re.match(team_code_pattern, team_code, re.IGNORECASE)
     if match:
         return None
@@ -160,3 +167,81 @@ def team_code_review(row):
         return None
 
     return "Invalid Team Code"
+
+
+def tracks_cleanup(tracks_data: gpd.GeoDataFrame):
+    tracks_data['Team Code'] = tracks_data['Team Code'].str.replace('/', '-').str.replace('_', '-')
+    tracks_data['Team Code'] = tracks_data['Team Code'].str.upper().str.replace(r'\s+', '', regex=True)
+    tracks_data['IMEI'] = tracks_data['IMEI'].str.upper().str.replace(r'\s+', '', regex=True)
+
+    required_fields = ['IMEI', 'Team Code', 'timestamp', 'track_date', 'Lat', 'Lon', 'Accuracy m', 'Speed mps', 'Track ID', 'geometry']
+    tracks_data = tracks_data[required_fields]
+
+    return tracks_data
+
+
+VB_DEVICE_PREFIX = 'VBU-'
+
+
+def normalize_team_code(code: pd.Series) -> pd.Series:
+    """The same clean-up tracks_cleanup applies to every Team Code."""
+    return code.astype(str).str.replace('/', '-').str.replace('_', '-').str.upper().str.replace(r'\s+', '', regex=True)
+
+
+def match_vb_team_code(vb_mapping: pd.DataFrame, tracks_df: gpd.GeoDataFrame):
+    """Give vaccine-buddy devices (IMEI 'VBU-<device id>') the team code the mapping assigns to
+    their device id (mapping columns 'DEVICE ID' and 'TEAM').
+
+    Matching ignores case, so it works whether or not the IMEI has been upper-cased already
+    (tracks_cleanup does). Devices the mapping does not list, or lists without a team, keep
+    the Team Code they came with. IMEIs and row order are left as they are."""
+    imei = tracks_df['IMEI'].astype(str)
+    is_vb = imei.str.upper().str.startswith(VB_DEVICE_PREFIX)
+    if not is_vb.any():
+        return tracks_df
+
+    mapping = vb_mapping[['DEVICE ID', 'TEAM']].dropna(subset=['DEVICE ID', 'TEAM']).copy()
+    mapping['key'] = mapping['DEVICE ID'].astype(str).str.strip().str.upper()
+    mapping['team'] = normalize_team_code(mapping['TEAM'])
+    mapping = mapping[mapping['team'] != ''].drop_duplicates(subset='key', keep='first')
+    team_by_device = mapping.set_index('key')['team']
+
+    device_id = imei[is_vb].str.upper().str[len(VB_DEVICE_PREFIX):].str.strip()
+    mapped = device_id.map(team_by_device)
+
+    updated_tracks = tracks_df.copy()
+    updated_tracks.loc[is_vb, 'Team Code'] = mapped.where(mapped.notna(), tracks_df.loc[is_vb, 'Team Code'])
+    return updated_tracks
+
+
+def get_admin_names(tracks_data: gpd.GeoDataFrame):
+    admin_map = ReadDBData('team_code', False).read_data()
+    enriched = tracks_data.merge(
+        admin_map[['statename', 'lganame', 'wardname', 'concat']],
+        left_on='admincode', right_on='concat', how='left'
+    )
+
+    admin_enriched = enriched.loc[enriched['statename'].notna()]
+    pending_enriched = enriched.loc[enriched['statename'].isna()]
+    pending_enriched.drop(columns=['statename', 'lganame', 'wardname'], inplace=True)
+
+    boundary = ReadDBData('wards', True).read_data()
+    geo_enriched = pending_enriched.sjoin(
+        boundary[['statename', 'lganame', 'wardname', 'geometry']],
+        how='left',
+        predicate='intersects'
+    )
+
+    enriched_tracks = pd.concat([admin_enriched, geo_enriched], ignore_index=True)
+    enriched_tracks.drop(columns=['index_right'], inplace=True)
+
+    return enriched_tracks
+
+
+def build_tracks_admin_code(team_code: str):
+    if pd.isna(team_code):
+        return None
+
+    code_parts = team_code.split('-')
+    admin_parts = code_parts[0:3]
+    return "".join(admin_parts)

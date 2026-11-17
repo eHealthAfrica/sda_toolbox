@@ -1,13 +1,12 @@
-import tempfile
-
 from fastapi import APIRouter, UploadFile, File, Form
-from fastapi.responses import FileResponse
 
 from toolbox.campaign.submission_reviewer import review_submission
 from toolbox.access.read_mgr import read_dataset
 from toolbox.exceptions import NoRecordsFound
 from toolbox.tools import generate_output_name
 from toolbox.models import State
+from toolbox.utils.offload import run_heavy
+from toolbox.utils.tempfiles import afile_response
 
 router = APIRouter()
 
@@ -34,19 +33,10 @@ async def campaign_submissions_reviewer(data: UploadFile = File(...), state: Sta
         CSV File of Reviewed Dataset
     """
     dataset = await read_dataset(data)
-    reviewed_dataset = review_submission(dataset, state)
+    reviewed_dataset = await run_heavy(review_submission, dataset, state)
 
     if reviewed_dataset.empty:
         raise NoRecordsFound("Empty Dataset", "No Records Passed QC")
 
-    tmp_file = tempfile.NamedTemporaryFile(delete=False)
-    reviewed_dataset.to_csv(tmp_file.name, index=False)
-
     save_name = generate_output_name(data.filename, 'csv', 'reviewed')
-
-    tmp_file.close()
-    return FileResponse(
-        tmp_file.name,
-        media_type='text/csv',
-        filename=save_name
-    )
+    return await afile_response(lambda path: reviewed_dataset.to_csv(path, index=False), '.csv', 'text/csv', save_name)

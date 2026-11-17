@@ -8,7 +8,7 @@ import DisaggregateTitleCards from './DisaggregateTitleCards'
 import DisaggregateChart from './DisaggregateChart'
 
 // Compiler · Disaggregate MLoS. POST /compiler/disaggregate returns a single
-// .xlsx workbook (one sheet per LGA or Ward) — parsed directly with the
+// .xlsx workbook (one sheet per State, LGA or Ward) — parsed directly with the
 // `xlsx` package, no zip involved. The "total records in original data"
 // title card and the missing-admin-value caveat both come from analyzing
 // the RAW upload client-side first (utils/compilerDisaggregateParse.ts),
@@ -118,7 +118,7 @@ export default function DisaggregatePage() {
 
       {!result && !submitting && !error && (
         <div style={{ fontSize: 12.5, color: 'var(--color-text-muted)', padding: '24px 0', textAlign: 'center' }}>
-          Upload a Master List of Settlements above to split it by LGA or Ward.
+          Upload a Master List of Settlements above to split it by State, LGA or Ward.
         </div>
       )}
     </div>

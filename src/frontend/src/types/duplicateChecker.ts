@@ -1,6 +1,24 @@
 export interface DuplicateCheckerFormInput {
   settlementsFile: File | null
   threshold: number
+  /** Backend `cross_reference_source` — use the source of each duplicate to help triangulate duplicate settlements. */
+  crossReferenceSource: boolean
+}
+
+// Text-similarity threshold slider bounds + default. Shared by the form (the
+// slider itself) and the page's empty-result state, which needs to know the
+// loosest setting available to decide whether "try a lower threshold" is
+// still a meaningful suggestion.
+export const DEFAULT_THRESHOLD = 92
+export const THRESHOLD_MIN = 80
+export const THRESHOLD_MAX = 100
+
+// What the page remembers about the run that produced the current result.
+// The backend returns an empty body when no pair clears the threshold, so
+// without this the empty-state card has no way to say WHAT was checked.
+export interface DuplicateRunInfo {
+  fileName: string
+  threshold: number
 }
 
 // Mirrors toolbox/mlos/validation/review/attributes/deep_search.py::
@@ -42,6 +60,12 @@ export interface DuplicateCheckerRecord {
   // 'Duplicate Review' in that case, never a real 0.
   distance: number | null
   review: ReviewOutcome | string
+  // Where each settlement of the pair was recorded (the file's 'Source' column,
+  // joined with ' | ' when a settlement appears more than once). The backend
+  // always sends the two columns, but they are only filled in when
+  // 'Cross-reference source' was on, and are empty otherwise.
+  source1?: string | null
+  source2?: string | null
 }
 
 export interface ParsedDuplicateCheckerResult {

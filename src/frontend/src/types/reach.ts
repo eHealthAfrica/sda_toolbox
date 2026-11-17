@@ -24,6 +24,17 @@ export interface ReachFormInput {
   method: TriangulationMethod
 }
 
+// What the page remembers about the run in flight / the run that produced the
+// current result. POST /validation answers with a bare CSV that carries no
+// echo of its inputs, so the running card and the empty-result card can only
+// say what was submitted because the page kept it.
+export interface ReachRunInfo {
+  plannedFileName: string | null
+  dataSourcesFileName: string | null
+  tracksFileName: string | null
+  method: TriangulationMethod
+}
+
 // Mirrors the `status` column toolbox/triangulate/triangulate.py writes
 // (reach >= 1 -> 'Visited', else 'Not Visited'). Unlike H2H's day_{N}_cumm
 // column there's no mop-up-dependent third state here — always exactly two

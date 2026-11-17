@@ -34,4 +34,14 @@ export interface JobRow {
   ended_at: string | null
   duration_ms: number | null
   error: string | null
+  // Added by the reliability work (see "SDA Toolbox Reliability: Backend
+  // Spec"). Optional because a backend that has not been upgraded yet does
+  // not send them; everything that reads them must cope with undefined.
+  error_category?: string | null
+  error_type?: string | null
+  error_detail?: string | null
+  traceback_hash?: string | null
+  stage?: string | null
+  source?: 'user' | 'canary'
+  input_bytes?: number | null
 }

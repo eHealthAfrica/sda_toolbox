@@ -1,7 +1,7 @@
 // Compiler · Disaggregate MLoS — POST /compiler/disaggregate
 // (toolbox/apps/aggregators/splitter.py::disaggregate_mlos, lines 19-79).
 // Splits an uploaded Master List of Settlements into one Excel sheet per
-// LGA (or per Ward — lga_code + "_" + ward_code), each formatted with
+// State, per LGA (state + "_" + lga) or per Ward (state_lga_ward), each formatted with
 // borders and data-validation rules (add_borders / add_data_validation_rules).
 // Returns a single .xlsx workbook, not zipped.
 //
@@ -33,7 +33,8 @@
 //    missing-admin-value count computed from the ORIGINAL upload rather
 //    than assuming it can never happen.
 
-export const DISAGGREGATE_LEVELS = ['LGA', 'Ward'] as const
+// Must match the backend's `level: Literal['State', 'LGA', 'Ward']` exactly.
+export const DISAGGREGATE_LEVELS = ['State', 'LGA', 'Ward'] as const
 export type DisaggregateLevel = (typeof DISAGGREGATE_LEVELS)[number]
 
 export interface DisaggregateFormInput {
@@ -50,7 +51,7 @@ export interface DisaggregateResult {
   sheets: SheetSummary[]
   /** Row count from the ORIGINAL uploaded file, computed client-side before submission — not from the response. */
   totalRecordsOriginal: number
-  /** Rows in the original upload missing an LGA (or, at Ward level, an LGA or Ward) value — these would silently vanish from every sheet (pandas groupby drops NaN keys). */
+  /** Rows in the original upload missing a value the chosen level groups on (State; State or LGA; or State, LGA or Ward) — these would silently vanish from every sheet (pandas groupby drops NaN keys). */
   rowsMissingAdminValue: number
   level: DisaggregateLevel
 }

@@ -16,7 +16,6 @@ from toolbox.exceptions import NotSupportedError, DataError
 def prepare_and_create_gdf(dataset: pd.DataFrame | gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     logging.info('Converting Merged Datasets to GeoDataFrame...')
     if isinstance(dataset, gpd.GeoDataFrame):
-        print(f'Final Tracks Record Count: {len(dataset):,}')
         return dataset
 
     if 'geometry' not in dataset.columns:

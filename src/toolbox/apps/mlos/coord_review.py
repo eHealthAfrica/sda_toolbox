@@ -1,14 +1,14 @@
 import logging
-import tempfile
 
 import pandas as pd
 from fastapi import APIRouter, UploadFile
 from fastapi.responses import FileResponse
 
-from toolbox.tools import read_compiled_data
+from toolbox.tools import read_compiled_data, generate_output_name
 from toolbox.tracks_manager.tr import read_tracks
 from toolbox.access.read_mgr import read_dataset
 from toolbox.mlos.validation.review.spatial.coordinate_reviewer import review_settlement_coordinates
+from toolbox.utils.tempfiles import afile_response
 
 router = APIRouter()
 logger = logging.getLogger('Coordinate Review')
@@ -40,11 +40,5 @@ async def settlements_coordinate_review(
 
     reviewed_data: pd.DataFrame = await review_settlement_coordinates(sources_dataset, settlements, tracks, use_osm)
 
-    tmp_file = tempfile.NamedTemporaryFile(delete=False)
-    reviewed_data.to_csv(tmp_file.name, index=False)
-
-    return FileResponse(
-        tmp_file.name,
-        filename=tmp_file.name,
-        media_type='text/csv',
-    )
+    save_name = generate_output_name(settlements_file.filename, 'csv', 'reviewed')
+    return await afile_response(lambda path: reviewed_data.to_csv(path, index=False), '.csv', 'text/csv', save_name)

@@ -3,6 +3,7 @@ from enum import Enum
 from uuid import UUID
 
 from fastapi import APIRouter
+from starlette.concurrency import run_in_threadpool
 
 from toolbox.configs import CONFIG
 from toolbox.access import ReadDBData
@@ -27,7 +28,8 @@ class UUIDResponses:
 @router.get("/uuid_check", tags=['Accessor'],  response_model=UUIDResponse)
 async def uuid_exist(uuid: UUID) -> UUIDResponse:
     settlements_table = CONFIG['DATASETS']['settlements']
-    found = ReadDBData(settlements_table, False).record_exists({'eha_guid': [str(uuid)]})
+    # Database calls block, so they run in a worker thread; this is not a heavy job, so it does not queue behind them.
+    found = await run_in_threadpool(lambda: ReadDBData(settlements_table, False).record_exists({'eha_guid': [str(uuid)]}))
     exists: Exists = Exists.EXISTS if found else Exists.NO
     return UUIDResponse(
         uuid=uuid,
@@ -39,14 +41,16 @@ async def uuid_exist(uuid: UUID) -> UUIDResponse:
 async def batch_check_uuid_exist(uuids: list[UUID]) -> UUIDResponses:
 
     settlements_table = CONFIG['DATASETS']['settlements']
-    reader = ReadDBData(settlements_table, False)
-    results = []
-    for uuid in uuids:
-        found = reader.record_exists({'eha_guid': [str(uuid)]})
-        exists: Exists = Exists.EXISTS if found else Exists.NO
-        response = UUIDResponse(uuid=uuid, exists=exists)
-        results.append(response)
 
-    responses = UUIDResponses(response=results)
+    def check_all() -> list[UUIDResponse]:
+        reader = ReadDBData(settlements_table, False)
+        results = []
+        for uuid in uuids:
+            found = reader.record_exists({'eha_guid': [str(uuid)]})
+            exists: Exists = Exists.EXISTS if found else Exists.NO
+            results.append(UUIDResponse(uuid=uuid, exists=exists))
+        return results
+
+    responses = UUIDResponses(response=await run_in_threadpool(check_all))
 
     return responses

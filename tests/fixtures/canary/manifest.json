@@ -1,0 +1,63 @@
+{
+  "_about": "Checks run by scripts/canary.py. 'platform' checks need no files. Tool checks ship disabled: build the fixture files under tests/fixtures/canary/<tool>/ (scripts/make_canary_fixture.py helps), run 'python scripts/canary.py --tool <name>' until it passes, then set enabled to true. Replace every REPLACE_ME value first.",
+  "checks": [
+    {
+      "name": "platform_health",
+      "path": "/health",
+      "expect": { "status": 200, "json_equals": { "status": "ok" } }
+    },
+    {
+      "name": "platform_ready",
+      "path": "/ready",
+      "expect": { "status": 200, "ready": true }
+    },
+    {
+      "name": "database_lookup",
+      "path": "/uuid_check?uuid=00000000-0000-4000-8000-000000000001",
+      "expect": { "status": 200, "json_has": ["uuid", "exists"] }
+    },
+    {
+      "name": "gts_device_tracking",
+      "enabled": false,
+      "method": "POST",
+      "path": "/tracking/devices",
+      "query": { "activity_code": "REPLACE_ME" },
+      "files": { "tracks_file": "gts_device_tracking/tracks.csv" },
+      "timeout": 120,
+      "expect": {
+        "status": 200,
+        "content_type": "text/csv",
+        "min_rows": 1,
+        "csv_columns": ["statename", "lganame", "wardname", "team_code", "imei", "analysis_date", "track_count",
+                        "duration_mins", "distance_meters", "coverage_area_sqm", "team_code_flag"]
+      }
+    },
+    {
+      "name": "reach",
+      "enabled": false,
+      "method": "POST",
+      "path": "/validation",
+      "files": {
+        "planned_settlements": "reach/planned_settlements.xlsx",
+        "data_sources": "reach/data_sources.zip",
+        "tracks": "reach/tracks.csv"
+      },
+      "timeout": 120,
+      "expect": { "status": 200, "content_type": "text/csv", "min_rows": 1, "csv_columns": ["reach"] }
+    },
+    {
+      "name": "h2h",
+      "enabled": false,
+      "method": "POST",
+      "path": "/tracking/gridded",
+      "files": { "tracks_path": "h2h/tracks.csv", "dip_file": "h2h/dip.xlsx" },
+      "form": { "analysis_day": "1", "is_mop_up": "false", "generate_report": "false" },
+      "timeout": 120,
+      "expect": { "status": 200, "content_type": "text/csv", "min_rows": 1, "headers_present": ["X-Job-Id"] },
+      "followup": {
+        "path": "/tracking/gridded/archive/{header:x-job-id}",
+        "expect": { "status": 200, "zip_contains": [".csv", ".gpkg"] }
+      }
+    }
+  ]
+}

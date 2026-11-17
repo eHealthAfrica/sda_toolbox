@@ -1,15 +1,24 @@
 import logging
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import geopandas as gpd
+from starlette.concurrency import run_in_threadpool
 
 from toolbox.utils import atimer
 from toolbox.tracks_manager.preprocess import filter_valid_tracks
 from toolbox.access.read_mgr import read_dataset, read_batch_data
 from toolbox.exceptions import InvalidInputError, FileNotFound
 from toolbox.tools import extract_and_find_file, save_uploaded_file, create_chunks
+
+
+def _merge_chunks(track_chunks: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
+    track_df = pd.concat(track_chunks, ignore_index=True)
+    tracks = gpd.GeoDataFrame(track_df)
+    assert isinstance(tracks, gpd.GeoDataFrame)
+    return tracks
 
 
 @atimer
@@ -34,18 +43,19 @@ async def read_tracks(tracks_path: Any, tracks_extension: str=None, apply_filter
     """
     logging.info('Reading tracks data')
 
-    if not tracks_path.filename.endswith('.zip'):
+    filename = tracks_path.filename if hasattr(tracks_path, 'filename') else tracks_path
+    if not filename.endswith('.zip'):
         tracks: gpd.GeoDataFrame = await read_dataset(tracks_path, True)
         return tracks
 
-    if tracks_path.filename.endswith('zip') and not tracks_extension:
+    if filename.endswith('zip') and not tracks_extension:
         logging.error('No Extension provided for batch file reading')
         raise InvalidInputError('No Extension Provided', 'Please Provide an Extension for tracks file')
 
     with tempfile.TemporaryDirectory() as temp_dir:
         print('Saving Input Tracks data to Temporary Directory...')
         zip_path = await save_uploaded_file(tracks_path, temp_dir)
-        track_files = extract_and_find_file(zip_path, temp_dir, tracks_extension)
+        track_files = await run_in_threadpool(extract_and_find_file, zip_path, temp_dir, tracks_extension)
 
         if not track_files:
             logging.error(f'No {tracks_extension} Files were found')
@@ -53,9 +63,17 @@ async def read_tracks(tracks_path: Any, tracks_extension: str=None, apply_filter
 
         file_chunks = create_chunks(track_files, 15)
         track_chunks: list[gpd.GeoDataFrame] = [await read_batch_data(chunk, True) for chunk in file_chunks]
-        track_df = pd.concat(track_chunks, ignore_index=True)
-        print(f"Total Tracks Count: {len(track_df):,}")
-        tracks = gpd.GeoDataFrame(track_df)
-        assert isinstance(tracks, gpd.GeoDataFrame)
+        tracks = await run_in_threadpool(_merge_chunks, track_chunks)
+        print(f"Total Tracks Count: {len(tracks):,}")
 
         return tracks
+
+
+if __name__ == '__main__':
+    import sys
+    import asyncio
+    tracks_path = sys.argv[1]
+    tracks_extension = sys.argv[2]
+
+    compiled_tracks = asyncio.run(read_tracks(tracks_path, tracks_extension))
+    compiled_tracks.to_file("C:\\Users\\enyinnaya.nwaiwu\\Downloads\\march2026_ramadam_phase2.gpkg")

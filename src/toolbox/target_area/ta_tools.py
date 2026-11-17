@@ -1,6 +1,8 @@
 import logging
 from typing import Any
+from dataclasses import dataclass
 from collections import defaultdict
+from collections.abc import Iterable, Sized
 
 import numpy as np
 import pandas as pd
@@ -8,11 +10,23 @@ from pyproj import CRS
 import geopandas as gpd
 from scipy.spatial import Voronoi
 from shapely.geometry import Polygon, box
+from shapely.geometry.point import Point
 
+from toolbox.configs import CONFIG
 from toolbox.tools import is_empty
 from toolbox.mlos import AdminColumns
 from toolbox.exceptions import DataError, InvalidInputError
 from toolbox.spatial_mgr import GeomColumns, convert_to_geodata
+
+
+@dataclass
+class GeneratorDatasets:
+    unique_column: str
+    settlement_data: gpd.GeoDataFrame
+    boundary_data: gpd.GeoDataFrame
+    voronoi_data: gpd.GeoDataFrame
+    grids_data: gpd.GeoDataFrame
+    buildings_data: gpd.GeoDataFrame
 
 
 def generate_grid(target_area: gpd.GeoDataFrame, cell_size: float) -> gpd.GeoDataFrame:
@@ -164,9 +178,8 @@ def validate_state_membership(settlement_subset: gpd.GeoDataFrame, settlements: 
     return None
 
 
-
 def grid_reviewer(row: pd.Series, building_limit: int) -> str | None:
-    buildings: int = row.get('building_count')
+    buildings: int = row.get('building_count', 0)
 
     if is_empty(buildings):
         return "drop"
@@ -177,30 +190,39 @@ def grid_reviewer(row: pd.Series, building_limit: int) -> str | None:
     return None
 
 
-def create_grid_cells(bounds: tuple[int, int, ..., ...], size: int, crs: CRS):
+def create_grid_cells(bounds: tuple, size: int, crs: CRS):
     """Return a list of box geometries tiling the given bounds at 'size' metres."""
-    xmin, ymin, xmax, ymax = bounds
-    xs = np.arange(xmin, xmax, size)
-    ys = np.arange(ymin, ymax, size)
+    x_min, y_min, x_max, y_max = bounds
+    xs = np.arange(x_min, x_max, size)
+    ys = np.arange(y_min, y_max, size)
     boxes =  [box(x, y, x + size, y + size) for x in xs for y in ys]
 
     return gpd.GeoDataFrame({'geometry': boxes}, crs=crs).set_geometry('geometry')
 
 
-def create_voronoi(geo_data: gpd.GeoDataFrame) -> tuple[Voronoi, Polygon] | None:
+def create_voronoi(geo_data: gpd.GeoDataFrame, min_margin=0.0) -> tuple[Voronoi, Polygon] | None:
     buffer_pct = 0.10
     coords = np.array([(geom.x, geom.y) for geom in geo_data.geometry])
 
-    if len(coords) < 4:
+    if len(coords) < 2:
         return None
 
     xmin, ymin = coords.min(axis=0)
     xmax, ymax = coords.max(axis=0)
-    dx = (xmax - xmin) * buffer_pct or 1000.0
-    dy = (ymax - ymin) * buffer_pct or 1000.0
+    dx = max((xmax - xmin) * buffer_pct, min_margin)or 1000.0
+    dy = max((ymax - ymin) * buffer_pct, min_margin) or 1000.0
     envelope = box(xmin - dx, ymin - dy, xmax + dx, ymax + dy)
 
-    vor = Voronoi(coords, qhull_options="Qbb Qc Qx")
+    # Four anchor points well outside the data close every real cell. They are appended after the real
+    # points, so real point i is still index i and generate_vertexes (which loops over the real rows only)
+    # is unchanged. Their own cells are never used.
+    span = max(xmax - xmin, ymax - ymin, 1000.0)
+    cx, cy = (xmin + xmax) / 2, (ymin + ymax) / 2
+    reach = span * 4
+    anchors = np.array([(cx - reach, cy - reach), (cx + reach, cy - reach),
+                        (cx + reach, cy + reach), (cx - reach, cy + reach)])
+
+    vor = Voronoi(np.vstack([coords, anchors]), qhull_options="Qbb Qc Qx")
     return vor, envelope
 
 
@@ -222,7 +244,7 @@ def generate_vertexes(geo_data: gpd.GeoDataFrame, point_to_vertices: defaultdict
     polygons, keep_idx = [], []
 
     for idx in range(len(geo_data)):
-        vertex = point_to_vertices.get(idx)
+        vertex: Iterable = point_to_vertices.get(idx)
         if not vertex or len(vertex) < 3:
             continue
 
@@ -249,6 +271,7 @@ def convert_vertices_to_polygon(geo_data: gpd.GeoDataFrame, polygons: list[Polyg
 
 
 def create_tesselation_polygon(points: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    logging.info('Creating Voronoi Polygons')
     voronoi, envelope = create_voronoi(points)
     point_to_vertices = map_vertices(voronoi)
     polygons, keep_idx = generate_vertexes(points, point_to_vertices, voronoi, envelope)
@@ -311,3 +334,173 @@ def check_admin(row: pd.Series, data_admin: AdminColumns, boundary_admin: AdminC
         return "Outside Ward"
 
     return None
+
+
+def find_overlapping_geometries(voronoi: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Joins the dataset to itself and removes location where both indexes are the same as well where index numbers
+    are revered indexes eg: 1 - 2 and 2 -1. leaving only unique intersections as the overlapping geometries"""
+    if not has_overlapping_geometries(voronoi):
+        return gpd.GeoDataFrame()
+
+    overlaps = gpd.sjoin(voronoi, voronoi, how="inner", predicate="intersects")
+    overlaps = overlaps[overlaps.index != overlaps["index_right"]]
+    index_pairs = np.sort(overlaps[[overlaps.index.name or 'index', 'index_right']].values, axis=1)
+    overlaps = overlaps.iloc[~gpd.pd.DataFrame(index_pairs).duplicated().values]
+
+    return overlaps[[overlaps.index.name or 'index', 'index_right']]
+
+
+def has_overlapping_geometries(voronoi: gpd.GeoDataFrame) -> bool:
+    has_overlaps = voronoi.union_all().area < voronoi.area.sum()
+    return has_overlaps
+
+
+def fallback_voronoi(geo_data: gpd.GeoDataFrame, distance: int = None) -> gpd.GeoDataFrame:
+    logging.info('Using Buffer to Create Voronoi...')
+
+    out_voronoi: gpd.GeoDataFrame = geo_data.copy()
+    buffer_distance = distance if distance else CONFIG['FALLBACK_BUFFER']
+    circles = out_voronoi.geometry.buffer(buffer_distance)
+
+    tessellation = create_voronoi(out_voronoi, min_margin=buffer_distance * 2)
+    if tessellation is not None:
+        vor, envelope = tessellation
+        generated = generate_vertexes(out_voronoi, map_vertices(vor), vor, envelope)
+        if generated:
+            polygons, keep_idx = generated
+            cell_list = [None] * len(out_voronoi)
+            for position, polygon in zip(keep_idx, polygons):
+                cell_list[position] = polygon
+            cells = gpd.GeoSeries(cell_list, index=out_voronoi.index, crs=out_voronoi.crs)
+            trimmed = circles.intersection(cells)
+            circles = trimmed.where(~(cells.isna() | trimmed.is_empty), circles)
+
+    out_voronoi['geometry'] = circles
+
+    return out_voronoi
+
+
+def fallback_grids(pending_voronoi: gpd.GeoDataFrame, start_id=1):
+    logging.info(f'Adopting Fallback Grids for {len(pending_voronoi)} Pending Settlements...')
+    grid_parts: list[gpd.GeoDataFrame] = []
+    voronoi_cols = [col for col in pending_voronoi.columns]
+    for _, row in pending_voronoi.iterrows():
+        size = 75
+        _cells = create_grid_cells(row.geometry.bounds, size, pending_voronoi.crs)
+        if _cells.empty:
+            continue
+
+        values = {col: [row[col]] for col in voronoi_cols}
+        tmp_overlaps = gpd.overlay(
+            _cells,
+            gpd.GeoDataFrame(geometry=[row.geometry]),
+            how="intersection"
+        )
+
+        if len(tmp_overlaps) == 0:
+            continue
+
+        tmp_overlaps['extent_type'] = row['type']
+        grid_parts.append(tmp_overlaps)
+
+    default_grids = gpd.GeoDataFrame(pd.concat(grid_parts, ignore_index=True)) if grid_parts else gpd.GeoDataFrame()
+    overlapping_grids = default_grids.overlay(pending_voronoi, how='intersection')
+    overlapping_grids['area_sqm'] = overlapping_grids.area
+    overlapping_grids = overlapping_grids.loc[overlapping_grids['area_sqm'] > int(CONFIG['AREA_LIMIT'])]
+    grids_count = len(overlapping_grids)
+    row_ids = range(start_id, grids_count + start_id, 1)
+    overlapping_grids['rowid'] = row_ids
+    logging.info(f"Total Overlapping Fallback Grid Cells: {grids_count:,}")
+    return overlapping_grids
+
+
+def assess_grids(row: pd.Series):
+    grid_building_count = row["building_count"]
+    if is_empty(grid_building_count):
+        return 'Drop'
+
+    residential_bds_count = row['Residential']
+    residential_bds_count = residential_bds_count if pd.notna(residential_bds_count) else 0
+    non_residential_bds_count = row['Non-Residential']
+    non_residential_bds_count = non_residential_bds_count if pd.notna(non_residential_bds_count) else 0
+    if non_residential_bds_count == 0:
+        return "Keep"
+
+    if residential_bds_count/grid_building_count >= 0.6:
+        return "Keep"
+
+    return "Drop"
+
+
+def review_grids_by_building_class(settlement_grids: pd.DataFrame) -> pd.DataFrame:
+    grids = settlement_grids.copy()
+    grids['status'] = grids.apply(assess_grids, axis=1)
+    droppable_grids: pd.DataFrame = grids.loc[grids["status"]=='Drop']
+
+    if len(droppable_grids) == len(grids):
+        # Adopts all grids for settlements extents that do not intersect any buildings
+        non_residential_grids = grids.loc[grids['Non-Residential'].notna()]
+        approved_grids = non_residential_grids if not non_residential_grids.empty else grids
+        return approved_grids
+
+    else:
+        droppable_indexes = droppable_grids.index.tolist()
+        passed_grid_group = grids.loc[~grids.index.isin(droppable_indexes)]
+        return passed_grid_group
+
+
+def cleanup_grids(grids_data: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    def harmonize_type(*types):
+        type1, type2, type3 = types
+        if pd.notna(type1):
+            return type1
+
+        elif pd.notna(type2):
+            return type2
+
+        return type3
+
+    grids_data['type'] = grids_data.apply(
+        lambda row: harmonize_type(row['type'], row['type_1'], row['extent_type']), axis=1)
+
+    (
+        grids_data.drop(columns=['type_1', 'extent_type', 'Non-Residential', 'building_count'])
+                   .rename(columns={'Residential': 'building_count'}, inplace=True)
+        )
+
+    cols_order = [
+        'rowid', 'eha_guid', 'unique_code', 'state_name', 'lga_name', 'ward_name', 'settlement_name',
+        'latitude', 'longitude', 'set_target', 'number_of_household', 'accessibility_status', 'building_count',
+        'weight', 'type', 'area_sqm', 'geometry'
+    ]
+
+    cols = [col for col in cols_order if col in grids_data.columns]
+    return grids_data[cols]
+
+
+def preview_settlements(settlements: gpd.GeoDataFrame, guid_col: str, admin_code_col: str):
+    settlement_view = settlements.copy()
+    settlement_view = settlement_view.loc[
+        (settlement_view.geometry.x!=0) & (settlement_view.geometry.y!=0)
+    ]
+
+    # A missing id is not a duplicate of another missing id, so only filled values are compared.
+    duplicate_masks = {
+        'a location shared with another settlement': settlement_view.duplicated(subset='geometry', keep=False),
+        'a duplicated unique code': settlement_view.duplicated(subset=admin_code_col, keep=False) & settlement_view[admin_code_col].notna(),
+        'a duplicated GUID': settlement_view.duplicated(subset=guid_col, keep=False) & settlement_view[guid_col].notna(),
+        'missing GUID': settlement_view[guid_col].isna()
+    }
+
+    errors = []
+    for problem, mask in duplicate_masks.items():
+        count = int(mask.sum())
+        if count < 1:
+            continue
+        examples = ', '.join(str(code) for code in settlement_view.loc[mask, admin_code_col].head(3))
+        errors.append(f"{count:,} settlements have {problem} (e.g. {examples})")
+
+    if errors:
+        raise DataError('Duplicates Found', "; ".join(errors))
+
+    return settlement_view

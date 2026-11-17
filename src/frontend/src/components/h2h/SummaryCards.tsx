@@ -32,7 +32,7 @@ export default function SummaryCards({
           label="Total time spent"
           value={formatMinutesSpent(totalTimeSpentMins)}
           accentColor="#2c5f9e"
-          hint="Sum of GPS-tracked minutes across these settlements"
+          hint="Total Time Spent by Vaccination Teams"
         />
       </div>
     </section>

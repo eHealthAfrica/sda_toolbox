@@ -9,9 +9,12 @@ import CoordinateReviewPage from './components/mlos/CoordinateReviewPage'
 import MlosOpsPage from './components/mlosOps/MlosOpsPage'
 import UuidCheckerPage from './components/uuidChecker/UuidCheckerPage'
 import ReachAnalysisPage from './components/reach/ReachAnalysisPage'
+import DeviceTrackingPage from './components/deviceTracking/DeviceTrackingPage'
 import ContactAnalysisPage from './components/contactAnalysis/ContactAnalysisPage'
 import PostImplementationPage from './components/postImplementation/PostImplementationPage'
 import TargetAreaPage from './components/targetArea/TargetAreaPage'
+import TargetAreaBufferPage from './components/targetArea/TargetAreaBufferPage'
+import CheckoutPage from './components/checkout/CheckoutPage'
 import MicroplanCombinePage from './components/microplan/MicroplanCombinePage'
 import ValidateDipPage from './components/microplanValidate/ValidateDipPage'
 import DipMergerPage from './components/dipMapMerger/DipMergerPage'
@@ -20,6 +23,7 @@ import TracksPage from './components/compilerTracks/TracksPage'
 import DisaggregatePage from './components/compilerDisaggregate/DisaggregatePage'
 import LgaDataPage from './components/compilerLgaData/LgaDataPage'
 import DailyReportPage from './components/dailyReport/DailyReportPage'
+import ReliabilityPage from './components/reliability/ReliabilityPage'
 
 const VIEW_META: Record<AppView, { title: string; subtitle: string }> = {
   dashboard: {
@@ -58,6 +62,11 @@ const VIEW_META: Record<AppView, { title: string; subtitle: string }> = {
     title: 'REACH Analysis',
     subtitle: 'POST /validation — triangulate settlement visitation across multiple campaign data sources and methods.',
   },
+  'device-tracking': {
+    title: 'Team & Device Tracking',
+    subtitle:
+      'POST /tracking/devices — review which teams and devices sent GPS tracks each day: deployment, reporting, missed work days, device and work-rate flags, and invalid or shared team codes.',
+  },
   'contact-analysis': {
     title: 'Contact Analysis',
     subtitle:
@@ -66,6 +75,16 @@ const VIEW_META: Record<AppView, { title: string; subtitle: string }> = {
   'target-area': {
     title: 'Target Area Generator',
     subtitle: 'POST /ta/generate_ta — generate voronoi and gridded target-area extents from a master list of settlements.',
+  },
+  'target-area-buffer': {
+    title: 'Target Area · Buffer',
+    subtitle:
+      'POST /ta/generate_ta/buffer — generate a buffer-based voronoi and gridded target area directly from a planned settlement list, for RES/RIC and Nomadic vaccination activities.',
+  },
+  'campaign-checkout': {
+    title: 'Campaign · Checkout Update',
+    subtitle:
+      'POST /campaign/checkout — bring a versioned SpatiaLite checkout up to date with a new MLoS: changed settlements are updated, new ones added and ones no longer in the MLoS removed, then download the updated database.',
   },
   'microplan-combine': {
     title: 'Microplan · Combine DMP Files',
@@ -95,7 +114,7 @@ const VIEW_META: Record<AppView, { title: string; subtitle: string }> = {
   'compiler-disaggregate': {
     title: 'Compiler · Disaggregate MLoS',
     subtitle:
-      'POST /compiler/disaggregate — split a Master List of Settlements into one Excel sheet per LGA or per Ward, each formatted with borders and data-validation rules.',
+      'POST /compiler/disaggregate — split a Master List of Settlements into one Excel sheet per State, LGA or Ward, each formatted with borders and data-validation rules.',
   },
   'compiler-lga-data': {
     title: 'Compiler · Combine LGA Data',
@@ -111,6 +130,11 @@ const VIEW_META: Record<AppView, { title: string; subtitle: string }> = {
     title: 'Reporting · Post Implementation Report',
     subtitle:
       'POST /reports/post — per-LGA summary pie charts and ward-level breakdown bar charts across a campaign settlement list, rendered live from the Plotly figures the backend returns.',
+  },
+  reliability: {
+    title: 'Operations · Reliability',
+    subtitle:
+      'GET /jobs/stats · GET /incidents · GET /ready — success rate against the 95% target, mean time to resolve, failure causes, incidents and backend readiness across every tool.',
   },
 }
 
@@ -158,11 +182,20 @@ export default function App() {
       <div className={viewClass('reach', view)}>
         <ReachAnalysisPage />
       </div>
+      <div className={viewClass('device-tracking', view)}>
+        <DeviceTrackingPage />
+      </div>
       <div className={viewClass('contact-analysis', view)}>
         <ContactAnalysisPage />
       </div>
       <div className={viewClass('target-area', view)}>
         <TargetAreaPage />
+      </div>
+      <div className={viewClass('target-area-buffer', view)}>
+        <TargetAreaBufferPage />
+      </div>
+      <div className={viewClass('campaign-checkout', view)}>
+        <CheckoutPage />
       </div>
       <div className={viewClass('microplan-combine', view)}>
         <MicroplanCombinePage />
@@ -190,6 +223,9 @@ export default function App() {
       </div>
       <div className={viewClass('post-implementation', view)}>
         <PostImplementationPage />
+      </div>
+      <div className={viewClass('reliability', view)}>
+        <ReliabilityPage active={view === 'reliability'} />
       </div>
     </AppShell>
   )

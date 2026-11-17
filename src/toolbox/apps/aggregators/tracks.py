@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from fastapi import APIRouter, BackgroundTasks, UploadFile, Query
 
 from toolbox.utils import atimer
+from toolbox.utils.offload import run_heavy
 from toolbox.configs import CONFIG
 from toolbox.access import ReadDBData
 from toolbox.spatial_mgr import SpatialOps
@@ -39,6 +40,26 @@ def cleanup_files(temp_dir_object: Any):
     except Exception as e:
         logging.warning(f"Error cleaning up temporary directory {temp_dir_object.name}: {e}")
 
+
+
+def clip_and_package(tracks: gpd.GeoDataFrame, states: list[State] | None) -> io.BytesIO:
+    """Clip the tracks to the chosen states and serialise them to an in-memory GeoPackage (CPU and IO heavy)."""
+    if states:
+        state_names = [state.value for state in states]
+        state_boundary_table = CONFIG['DATASETS']['state_boundary']
+        state_boundary = ReadDBData(state_boundary_table, True).read_data({'statename': [state_names]})
+        tracks = SpatialOps.clip_dataset(tracks, state_boundary)
+        if tracks.empty:
+            raise NoRecordsFound('No Records', f'No Tracks Fall within {", ".join(state_names)}')
+
+        tracks = tracks.sjoin(state_boundary[['geometry', 'statename']], how='left', predicate='intersects')
+        print(f"Tracks Count Within Selected {len(state_names)} States: {len(tracks):,}")
+
+    print('Saving to GeoPackage Database...')
+    buffer = io.BytesIO()
+    tracks.to_file(buffer, driver="GPKG", layer='tracks', engine="pyogrio")
+    buffer.seek(0)
+    return buffer
 
 
 @atimer(title="Combine Tracks")
@@ -74,21 +95,7 @@ async def combine_tracks(
             apply_filter=remove_invalid_tracks
         )
 
-        if states:
-            state_names = [state.value for state in states]
-            state_boundary_table = CONFIG['DATASETS']['state_boundary']
-            state_boundary = ReadDBData(state_boundary_table, True).read_data({'statename': [state_names]})
-            tracks = SpatialOps.clip_dataset(tracks, state_boundary)
-            if tracks.empty:
-                return NoRecordsFound('No Records', f'No Tracks Fall within {", ".join(state_names)}')
-
-            tracks = tracks.sjoin(state_boundary[['geometry', 'statename']], how='left', predicate='intersects')
-            print(f"Tracks Count Within {", ".join(state_names)}: {len(tracks):,}")
-
-        print('Saving to GeoPackage Database...')
-        buffer = io.BytesIO()
-        tracks.to_file(buffer, driver="GPKG", layer='tracks', engine="pyogrio")
-        buffer.seek(0)
+        buffer = await run_heavy(clip_and_package, tracks, states)
 
         timestamp = datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
         return StreamingResponse(

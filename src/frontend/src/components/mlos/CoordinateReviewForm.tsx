@@ -95,15 +95,15 @@ export default function CoordinateReviewForm({ onSubmit, submitting }: Coordinat
     >
       <FileDropzone
         label="Settlement list *"
-        hint="The baseline coordinates being judged."
+        hint="The baseline settlements."
         accept=".csv,.xlsx,.xls"
         file={settlementsFile}
         onChange={setSettlementsFile}
         labelMinHeight={40}
       />
       <FileDropzone
-        label="Sources workbook *"
-        hint="One sheet per source — .xlsx/.xls (every sheet is read) or .zip. A plain .csv is rejected."
+        label="Sources*"
+        hint="A Microsoft Excel Document with well named sheet per source. A zipped file of well named files is also accepted."
         accept=".xlsx,.xls,.zip"
         file={sourcesFile}
         onChange={setSourcesFile}
@@ -111,7 +111,7 @@ export default function CoordinateReviewForm({ onSubmit, submitting }: Coordinat
       />
       <FileDropzone
         label="Tracks file *"
-        hint="A single spatial file (.gpkg/.kml/.shp/.sqlite) or lat/lon csv/xlsx — a .zip currently fails server-side."
+        hint="A compiled GTS Tracks file."
         accept=".gpkg,.kml,.shp,.sqlite,.csv,.xlsx,.xls"
         file={tracksFile}
         onChange={setTracksFile}

@@ -23,14 +23,15 @@ class GeomColumns:
         x_field = cls._filter_coords(x_numeric_options, 'x', data)
         y_field = cls._filter_coords(y_numeric_options, 'y', data)
 
-        if (x_field is None or y_field is None) and (enforce is True):
+        if (x_field is None and y_field is None) and (enforce is True):
             raise NotFoundError('missing coordinate field', 'Could not find both x and y fields')
 
         if x_field and y_field and x_field == y_field:
-            raise NotFoundError('missing coordinate field', f'only {x_field} found')
+            raise NotFoundError('missing coordinate field', f'only {x_field} found was found for latitude/longitude')
 
-        if (x_field is None and y_field) or (x_field and  y_field is None):
-            raise NotFoundError('missing coordinate field', f'only coordinate field found')
+        if ((x_field is None and y_field) or (x_field and  y_field is None)) and (enforce is True):
+            raise NotFoundError(
+                'missing coordinate field', f'only {"longitude" if x_field else "latitude"} coordinate field found')
 
         return GeomColumns(latitude=y_field, longitude=x_field)
 

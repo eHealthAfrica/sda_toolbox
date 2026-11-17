@@ -10,6 +10,7 @@ def flag_settlements(settlement_data: pd.DataFrame, report_cols: list[str]):
     settlement_data['is_flagged'] = settlement_data['is_flagged'].replace({True: 'Flagged', False: np.nan})
 
     issues_counter(settlement_data, 'is_flagged', 'Total Flagged', suffix=True)
+    settlement_data = categorize_flags(settlement_data)
     return settlement_data
 
 
@@ -17,7 +18,7 @@ def classify_flag(row: pd.Series) -> str | None:
     flagged = row['is_flagged']
     level = row['flag_level']
 
-    if pd.isna(flagged):
+    if pd.isna(flagged) or not flagged:
         return None
 
     if not level:
@@ -37,7 +38,7 @@ def categorize_flags(settlement_data: pd.DataFrame):
     flag_cols = gen_flags + attr_flags
     query = " | ".join([f"({col}.notnull())" for col in flag_cols])
     settlement_data = settlement_data.eval(f"flag_level={query}", engine='python')
-    settlement_data['Flag Level'] = settlement_data.apply(classify_flag, axis=1)
+    settlement_data['flag_level'] = settlement_data.apply(classify_flag, axis=1)
     return settlement_data
 
 

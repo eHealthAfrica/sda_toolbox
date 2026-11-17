@@ -77,7 +77,7 @@ def get_admin_col(data: pd.DataFrame, admin_type: Literal['state', 'lga', 'ward'
         raise DataError('Missing Field', f'{admin_type} could not be detected')
 
     if not result and error == 'ignore':
-        logging.error(f'{admin_type} Column Not Detected and Ignored')
+        logging.warning(f'{admin_type} Column Not Detected and Ignored')
         return None
 
     admin_names = [admin[0] for admin in result]

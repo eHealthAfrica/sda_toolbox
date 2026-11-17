@@ -110,10 +110,4 @@ def assess_grid_visitation(tracks: gpd.GeoDataFrame, state_info: State | list[St
                                   .set_index(gridded_ta_col)
     )
 
-    # updated_cumulative_summary = reassess_visitation(updated_cumulative_summary)
-    # target_area = ta_data.merge(updated_cumulative_summary['visitation'], how="left", left_on=gridded_ta_col, right_index=True)
-
-    # update_data(gridded_target_area, datasets['gridded_settlement_extent'])
-    # update_data(target_area, datasets['settlement_extent'])
-
     return CoverageDataSet(gridded_ta_col, clipped_tracks, updated_cumulative_summary)

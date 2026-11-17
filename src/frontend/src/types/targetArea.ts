@@ -11,6 +11,23 @@ export interface TargetAreaFormInput {
   identifier: TargetAreaIdentifier | null
 }
 
+// Mirrors POST /ta/generate_ta/buffer (toolbox/apps/campaign/target_area.py::
+// generate_buffer_based_ta) — the "buffer strategy" TA generator used for
+// RES/RIC and Nomadic vaccination activities. Unlike /ta/generate_ta above,
+// there's only ONE input file: the planned settlement list IS the geometry
+// source voronoi/gridded TA are generated from directly, so there's no
+// separate MLoS-vs-planned-subset distinction here. `bufferDistance` is a
+// plain int (not wrapped in Form(...) on the backend), so it travels as a
+// URL query param, not a multipart form field — see submitGenerateBufferTA.
+export const BUFFER_DISTANCE_MIN = 100
+export const BUFFER_DISTANCE_MAX = 400
+export const BUFFER_DISTANCE_DEFAULT = 200
+
+export interface BufferTargetAreaFormInput {
+  plannedSettlementListFile: File | null
+  bufferDistance: number
+}
+
 // One row of a GeoPackage feature layer inside the response ZIP — attribute
 // columns only (see utils/gpkg.ts for the geometry column). Column names
 // beyond what the backend always writes (`type`, and — on gridded_ta only —
@@ -61,4 +78,23 @@ export interface ParsedTargetAreaResult {
    * fully downloadable regardless (see TargetAreaPage.tsx's resultBlob).
    */
   memoryLimited?: boolean
+}
+
+// What POST /ta/generate_ta says it did with each state, from the X-TA-Summary response header
+// (toolbox/target_area/run_summary.py). A state is skipped when it cannot be processed — duplicate
+// settlements, missing boundary data, a failure part-way — and the rest of the run still completes.
+export interface SkippedState {
+  state: string
+  reason: string
+}
+
+export interface TargetAreaRunSummary {
+  statesRun: string[]
+  skipped: SkippedState[]
+}
+
+export interface TargetAreaResponse {
+  blob: Blob
+  /** Null when the server sent no summary (an older backend) or it could not be read. */
+  summary: TargetAreaRunSummary | null
 }

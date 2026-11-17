@@ -17,9 +17,13 @@ export async function analyzeOriginalMlos(
 
   let rowsMissingAdminValue = 0
   for (const row of parsed.rows) {
-    const lgaBlank = !columns.lga || !String(row[columns.lga] ?? '').trim()
-    const wardBlank = level === 'Ward' && (!columns.ward || !String(row[columns.ward] ?? '').trim())
-    if (lgaBlank || wardBlank) rowsMissingAdminValue += 1
+    // Each level groups on a key built from every level above it
+    // (State; State_LGA; State_LGA_Ward), so a blank at any of those drops the row.
+    const isBlank = (col: string | null) => !col || !String(row[col] ?? '').trim()
+    const stateBlank = isBlank(columns.state)
+    const lgaBlank = level !== 'State' && isBlank(columns.lga)
+    const wardBlank = level === 'Ward' && isBlank(columns.ward)
+    if (stateBlank || lgaBlank || wardBlank) rowsMissingAdminValue += 1
   }
 
   return { totalRecordsOriginal: parsed.rows.length, rowsMissingAdminValue }

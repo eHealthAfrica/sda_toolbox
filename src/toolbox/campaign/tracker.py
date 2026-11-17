@@ -1,15 +1,19 @@
 import logging
 
 import pandas as pd
+from fastapi import UploadFile
 
+from toolbox.access.read_mgr import read_dataset
 from toolbox.campaign.visitation_analysis import update_dip_data
 from toolbox.campaign import CampaignDatasets, CoverageDataSet
 from toolbox.campaign.campaign_tools import classify_results
 from toolbox.campaign.grids import assess_grid_visitation
 from toolbox.reporting import DailyReport, PostReport
-from toolbox.models import State, CampaignDay
+from toolbox.models import State, CampaignDay, Extensions
 from toolbox.configs import CONFIG
+from toolbox.tracks_manager.tr import read_tracks
 from toolbox.utils import atimer
+from toolbox.utils.offload import run_heavy
 
 
 def prepare_reports(dip_data: pd.DataFrame, day_col: str) -> list[PostReport]:
@@ -24,8 +28,21 @@ def prepare_reports(dip_data: pd.DataFrame, day_col: str) -> list[PostReport]:
     return reports
 
 
-@atimer(title="Gridded Settlement Visitation Analysis", display=True)
-async def settlement_tracking(
+# async def prepare_datasets(
+#         settlement_file: UploadFile, tracks_file: UploadFile,
+#         extension: Extensions, day: int, mop_up: bool) -> CampaignDatasets:
+#
+#     dip_data = await read_dataset(settlement_file)
+#     extension = extension.value if extension else None
+#     tracks_data: gpd.GeoDataFrame = await read_tracks(tracks_file, extension)
+#
+#     campaign_day = CampaignDay(analysis_day=day, is_mop_up=mop_up)
+#     datasets = CampaignDatasets(dip_data, tracks_data, campaign_day)
+#
+#     return datasets
+
+
+def _track_settlements(
         campaign_datasets: CampaignDatasets,
         state: State | list[State],
         generate_report: bool=True) -> CampaignDatasets:
@@ -75,36 +92,34 @@ async def settlement_tracking(
     return campaign_datasets
 
 
+@atimer(title="Gridded Settlement Visitation Analysis", display=True)
+async def settlement_tracking(
+        campaign_datasets: CampaignDatasets,
+        state: State | list[State],
+        generate_report: bool=True) -> CampaignDatasets:
+    """Tracks settlement visitation using GPS tracks (see _track_settlements for the parameters).
+
+    The analysis is heavy pandas/geopandas work, so it runs in a worker thread: on the event loop it
+    would freeze every other request, /health included, until it finished (hardening H7)."""
+    return await run_heavy(_track_settlements, campaign_datasets, state, generate_report)
+
+
 if __name__ == '__main__':
     import geopandas as gpd
     import asyncio
 
-    folder = "C:\\Workspace\\NEOC\\IBRA\\August Round"
-    dip = pd.read_csv(f'{folder}\\Compiled IBRA R2 Settlements.csv')
+    folder = "C:\\Workspace\\NEOC\\MIGRANT MAPPING\\SEPTEMEBR ROUND"
+    dip = pd.read_csv(f'{folder}\\September2026_Migrant_Sites.csv')
 
-    tracks = gpd.read_file(f'{folder}\\GIS\\tracks_day_6.gpkg', driver='GPKG')
-    day = 6  #int(input('Enter Analysis Day: '))
+    tracks = gpd.read_file(f'{folder}\\GIS\\tracks.gpkg', driver='GPKG')
+    day = 5 #int(input('Enter Analysis Day: '))
 
     datasets = CampaignDatasets(
         settlements=dip,
         tracks=tracks,
         campaign_day=CampaignDay(analysis_day=day, is_mop_up=True)
     )
-    states = ['Adamawa',
-     'Bauchi',
-     'Borno',
-     'Gombe',
-     'Jigawa',
-     'Kaduna',
-     'Kano',
-     'Katsina',
-     'Kebbi',
-     'Kwara',
-     'Nasarawa',
-     'Niger',
-     'Sokoto',
-     'Yobe',
-     'Zamfara']
+    states = dip['STATE'].unique().tolist()
     result = asyncio.run(
         settlement_tracking(
             datasets,

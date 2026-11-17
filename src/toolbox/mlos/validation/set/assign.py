@@ -47,7 +47,7 @@ def evaluate_settlement_validation(mlos_data: pd.DataFrame, attributes: MLoSAttr
 
     validation_col = find_column(mlos_data, 'validation_status', 'ignore')
     if not validation_col:
-        validation_col = 'validation_status'
+        validation_col = 'qc_status'
         mlos_data[validation_col] = pd.NA
 
     tqdm.pandas(desc='Setting Validation Status')

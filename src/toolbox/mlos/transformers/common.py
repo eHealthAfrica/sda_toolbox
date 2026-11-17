@@ -54,31 +54,37 @@ def standardize_column_names(data: pd.DataFrame, columns: list=None) -> pd.DataF
         raise MissingConfiguration('config info missing', f'{e}')
 
 
-def common_transformations(data: pd.DataFrame):
+def standardize_attribute_values(data: pd.DataFrame, columns: list | None=None, unique_code: str|None=None) -> pd.DataFrame:
+    logging.info('Standardizing Values')
     exclusions = CONFIG['EXCLUSIONS']
+    columns = columns if columns else data.columns
     columns_to_exclude = [find_column(data, exc, 'ignore') for exc in exclusions]
     columns_to_standardize = [
-        col for col in data.columns
+        col for col in columns
         if col not in columns_to_exclude
-        and data[col].dtype.name == 'str'
+           and data[col].dtype.name == 'str'
     ]
 
-    logging.info('Standardizing Values')
     for col in columns_to_standardize:
         data[col] = data[col].apply(standardize_value)
 
-    logging.info('Standardizing Column Names')
-    data = standardize_column_names(data)
-
     logging.info('Updating Abbreviations')
     settlement = get_admin_col(data, 'settlement')
-    data[settlement] = data.apply(update_abbreviations, args=(settlement, ), axis=1)
-    unique_code = detect_unique_admin_field(data)
+    data[settlement] = data.apply(update_abbreviations, args=(settlement,), axis=1)
+    unique_code: str = unique_code if unique_code else detect_unique_admin_field(data)
 
     if unique_code:
         print('Deleting Unique Code')
         data.drop(columns=unique_code, inplace=True)
 
-    data = construct_new_unique(data, 'unique_code', settlement)
+    data = construct_new_unique(data, unique_code, settlement)
+    return data
+
+
+def common_transformations(data: pd.DataFrame, columns: list=None) -> pd.DataFrame:
+
+    logging.info('Standardizing Column Names')
+    data = standardize_column_names(data)
+    data = standardize_attribute_values(data, columns)
 
     return data

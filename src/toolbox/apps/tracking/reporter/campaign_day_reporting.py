@@ -5,6 +5,7 @@ from toolbox.access.read_mgr import read_dataset
 from toolbox.tools import detect_number
 from toolbox.reporting import DailyReport, PostReport
 from toolbox.tools import write_in_memory_zip
+from toolbox.utils.offload import run_heavy
 
 router = APIRouter()
 
@@ -33,8 +34,12 @@ async def generate_campaign_daily_report(
     """
 
     settlement_data = await read_dataset(settlement_list)
-    daily_report = DailyReport(settlement_data, coverage_col, campaign_day_col)
-    image_reports = daily_report.generate_report()
+    def build_reports():
+        daily_report = DailyReport(settlement_data, coverage_col, campaign_day_col)
+        return daily_report.generate_report()
+
+    # Drawing and encoding every chart is slow: keep it off the event loop.
+    image_reports = await run_heavy(build_reports)
 
     # campaign_day = detect_number(campaign_day_col)
     # zip_buffer = write_in_memory_zip(daily_report, image_reports, campaign_day)

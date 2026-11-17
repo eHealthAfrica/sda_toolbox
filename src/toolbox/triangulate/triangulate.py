@@ -10,7 +10,7 @@ from toolbox.triangulate.ttools import evaluate_reach, populate_sources
 from toolbox.utils import timer
 
 
-@timer
+@timer(display=True)
 def triangulating_reached_settlements(
         settlement_data: pd.DataFrame, submission_datasets: dict[str, pd.DataFrame],
         methods: list[TriangulationMethod], unique_settlement_code: str, aoi: list[State]):
@@ -38,14 +38,12 @@ def triangulating_reached_settlements(
 if __name__ == '__main__':
     from toolbox.models import TriangulationMethod, State
     from toolbox.mlos import get_admin_col
-    folder = "C:\\Workspace\\NEOC\\IBRA\\August Round"
-    settlements = pd.read_csv(f"{folder}\\Compiled IBRA R2 Settlements.csv")
-    submission_file = f"{folder}\\Submissions\\Standardized\\August 2026 IBRA 2 Campaign Submissions.xlsx"
+    folder = "C:\\Workspace\\NEOC\\NIPDs\\NOV ROUND\\Analysis"
+    settlements = pd.read_csv(f"{folder}\\20261023_Final Settlements List for November 2026 Campaign_v9.csv")
+    submission_file = f"{folder}\\Submissions\\November 2026 NIPDs Campaign Submission v3.xlsx"
     sheets = pd.ExcelFile(submission_file).sheet_names
     submissions = {}
     for sheet in sheets:
-        if sheet != 'Fionet':
-            continue
         sheet_data = pd.read_excel(submission_file,sheet_name=sheet)
         submissions[sheet] = sheet_data
 
@@ -57,3 +55,5 @@ if __name__ == '__main__':
         settlements, submissions, [TriangulationMethod.SETTLEMENT, TriangulationMethod.COORDS],
         'unique_code', states
     )
+
+    result.to_csv(f'{folder}\\reach_analysis.csv', index=False)

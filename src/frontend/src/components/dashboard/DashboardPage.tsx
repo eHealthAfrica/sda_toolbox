@@ -3,11 +3,12 @@ import type { CSSProperties, ReactNode } from 'react'
 import type { AppView } from '../layout/AppShell'
 import { fetchJobsSummary, fetchRecentJobs } from '../../api/client'
 import type { JobRow, JobsSummary } from '../../types/jobs'
+import ReliabilityCard from './ReliabilityCard'
 
 // Every AppView the Dashboard can actually navigate to. Used to guard
 // clicking a job row: toolbox/job_tracker/middleware.py logs a few tool keys
 // with no frontend page yet ('hitnrun', 'contact-analysis',
-// 'submission-reviewer', 'checkout', 'post-implementation-report',
+// 'submission-reviewer', 'post-implementation-report',
 // 'timespent', 'microplan-dip') — a row for one of those stays inert rather
 // than calling onNavigate with a view AppShell doesn't know.
 const KNOWN_VIEWS = new Set<string>([
@@ -26,6 +27,11 @@ const KNOWN_VIEWS = new Set<string>([
   'compiler-lga-data',
   'daily-report',
 ])
+
+// Job tool keys (middleware.py) whose page is named differently.
+const TOOL_VIEW_ALIASES: Record<string, AppView> = {
+  update_checkout: 'campaign-checkout',
+}
 
 function formatDuration(ms: number | null): string {
   if (ms === null) return '—'
@@ -68,6 +74,7 @@ const VIEW_LABELS: Partial<Record<AppView, string>> = {
   'compiler-disaggregate': 'Compiler · Disaggregate MLoS',
   'compiler-lga-data': 'Compiler · Combine LGA Data',
   'daily-report': 'Reporting · Daily Report',
+  'campaign-checkout': 'Campaign · Checkout Update',
 }
 
 interface QuickTool {
@@ -261,7 +268,7 @@ export default function DashboardPage({ onNavigate }: DashboardPageProps) {
             </thead>
             <tbody>
               {recentJobs.map((job) => {
-                const view = KNOWN_VIEWS.has(job.tool) ? (job.tool as AppView) : null
+                const view = TOOL_VIEW_ALIASES[job.tool] ?? (KNOWN_VIEWS.has(job.tool) ? (job.tool as AppView) : null)
                 return (
                   <tr
                     key={job.id}
@@ -287,6 +294,8 @@ export default function DashboardPage({ onNavigate }: DashboardPageProps) {
           </div>
         )}
       </div>
+
+      <ReliabilityCard onOpen={() => onNavigate('reliability')} />
     </div>
   )
 }

@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import Papa from 'papaparse'
 import { ApiError, submitDuplicateChecker } from '../../api/client'
 import { parseDuplicateCheckerCsv } from '../../api/parseResult'
 import { useJobTracker } from '../../state/jobTracker'
 import type {
   DuplicateCheckerFormInput,
+  DuplicateRunInfo,
   IndexedDuplicateRecord,
   ParsedDuplicateCheckerResult,
   ReviewDecision,
@@ -15,12 +16,14 @@ import {
   computeDuplicateGroupBreakdown,
   computeGeographyCoverage,
   computeReviewOutcomeCounts,
+  hasSourceValues,
   uniqueFieldValues,
 } from '../../utils/duplicateCheckerAggregate'
 import DuplicateCheckerForm from './DuplicateCheckerForm'
 import DuplicateCoverageCards from './DuplicateCoverageCards'
 import DuplicateStatCards from './DuplicateStatCards'
 import DuplicateBreakdownChart from './DuplicateBreakdownChart'
+import DuplicateNoResultsCard from './DuplicateNoResultsCard'
 import DuplicatePairsTable from './DuplicatePairsTable'
 
 type DrillLevel = 'state' | 'lga' | 'ward'
@@ -106,6 +109,11 @@ export default function DuplicateCheckerPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<ParsedDuplicateCheckerResult | null>(null)
+  // File name + threshold of the run behind `result` — the empty-result card
+  // needs them because a run with no flagged pairs comes back as an empty CSV
+  // that says nothing about what was checked.
+  const [runInfo, setRunInfo] = useState<DuplicateRunInfo | null>(null)
+  const formRef = useRef<HTMLDivElement>(null)
 
   const [drillState, setDrillState] = useState<string | null>(null)
   const [drillLga, setDrillLga] = useState<string | null>(null)
@@ -125,12 +133,13 @@ export default function DuplicateCheckerPage() {
     setDecisions({})
     const jobId = startJob('mlos-duplicate-checker', input.settlementsFile.name)
     try {
-      const csvBlob = await submitDuplicateChecker(input.settlementsFile, input.threshold)
+      const csvBlob = await submitDuplicateChecker(input.settlementsFile, input.threshold, input.crossReferenceSource)
       const parsed = await parseDuplicateCheckerCsv(
         csvBlob,
         `${input.settlementsFile.name.split('.')[0] ?? 'settlements'}_duplicate_review.csv`,
       )
       setResult(parsed)
+      setRunInfo({ fileName: input.settlementsFile.name, threshold: input.threshold })
       completeJob(jobId)
     } catch (err) {
       if (err instanceof ApiError) {
@@ -142,6 +151,7 @@ export default function DuplicateCheckerPage() {
         setError('Something went wrong while running the duplicate check.')
       }
       setResult(null)
+      setRunInfo(null)
       failJob(jobId)
     } finally {
       setSubmitting(false)
@@ -177,6 +187,7 @@ export default function DuplicateCheckerPage() {
     return scopedRecords.filter((r) => r.review === filterReview)
   }, [scopedRecords, filterReview])
 
+  const showSources = useMemo(() => (result ? hasSourceValues(result.records) : false), [result])
   const coverage = useMemo(() => computeGeographyCoverage(scopedRecords), [scopedRecords])
   const reviewCounts = useMemo(() => computeReviewOutcomeCounts(scopedRecords), [scopedRecords])
   const decidedCount = useMemo(
@@ -284,6 +295,7 @@ export default function DuplicateCheckerPage() {
           score: r.score,
           distance: r.distance ?? '',
           review: r.review,
+          ...(showSources ? { source1: r.source1 ?? '', source2: r.source2 ?? '' } : {}),
           decision: decision ? DECISION_LABELS[decision] : '',
         }
       })
@@ -301,7 +313,9 @@ export default function DuplicateCheckerPage() {
 
   return (
     <div>
-      <DuplicateCheckerForm onSubmit={handleSubmit} submitting={submitting} />
+      <div ref={formRef}>
+        <DuplicateCheckerForm onSubmit={handleSubmit} submitting={submitting} />
+      </div>
 
       {error && (
         <div
@@ -326,7 +340,20 @@ export default function DuplicateCheckerPage() {
         </div>
       )}
 
-      {result && (
+      {/* Clean run: the backend found no pair at/above the threshold and sent
+          back an empty CSV. Show one success card instead of the dashboard —
+          the cards, chart, decision notes, download button and pairs table all
+          have nothing to show, and the table's own "no pairs match the current
+          filters" message would be misleading here. That message is now only
+          reachable when a filter narrows a NON-empty result to zero. */}
+      {result && result.records.length === 0 && runInfo && (
+        <DuplicateNoResultsCard
+          run={runInfo}
+          onAdjustThreshold={() => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+        />
+      )}
+
+      {result && result.records.length > 0 && (
         <>
           <ReviewOutcomeNotes />
 
@@ -383,6 +410,7 @@ export default function DuplicateCheckerPage() {
             records={filteredRecords}
             totalCount={scopedRecords.length}
             decisions={decisions}
+            showSources={showSources}
             onDecide={decide}
             onUndo={undoDecision}
             filterState={drillState}

@@ -9,6 +9,8 @@ interface DuplicatePairsTableProps {
   records: IndexedDuplicateRecord[]
   totalCount: number
   decisions: Record<number, ReviewDecision>
+  // Add the Source 1 / Source 2 columns (set when the run cross-referenced the file's Source column).
+  showSources: boolean
   onDecide: (idx: number, decision: ReviewDecision) => void
   onUndo: (idx: number) => void
   filterState: string | null
@@ -82,6 +84,7 @@ export default function DuplicatePairsTable({
   records,
   totalCount,
   decisions,
+  showSources,
   onDecide,
   onUndo,
   filterState,
@@ -233,6 +236,8 @@ export default function DuplicatePairsTable({
                   <th style={thStyle}>Ward</th>
                   <th style={thStyle}>Settlement 1</th>
                   <th style={thStyle}>Settlement 2</th>
+                  {showSources && <th style={thStyle}>Source 1</th>}
+                  {showSources && <th style={thStyle}>Source 2</th>}
                   <th style={thStyle}>Score</th>
                   <th style={thStyle}>Distance</th>
                   <th style={thStyle}>Review</th>
@@ -250,6 +255,8 @@ export default function DuplicatePairsTable({
                       <td style={tdStyle}>{record.ward}</td>
                       <td style={tdStyle}>{record['settlement 1']}</td>
                       <td style={tdStyle}>{record['settlement 2']}</td>
+                      {showSources && <td style={tdStyle}>{record.source1}</td>}
+                      {showSources && <td style={tdStyle}>{record.source2}</td>}
                       <td style={tdStyle}>{record.score}</td>
                       <td style={tdStyle}>{formatDistance(record.distance)}</td>
                       <td style={tdStyle}>

@@ -4,6 +4,7 @@ from typing import Any
 import pandas as pd
 
 from toolbox.configs import CONFIG
+from toolbox.exceptions import NotFoundError
 
 
 def is_empty(value: Any) -> bool:
@@ -68,3 +69,14 @@ def coords_are_valid(coord_data: list[list[float]]) -> bool:
         return False
 
     return True
+
+
+def get_field_index(fields: list[str], field_name: str) -> int:
+    for index, field in enumerate(fields):
+        if field == field_name:
+            return index
+
+        else:
+            continue
+
+    raise NotFoundError('Missing Field', f"{field_name} not found in Data")

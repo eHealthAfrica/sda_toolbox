@@ -1,4 +1,5 @@
 import io
+import os
 import logging
 import zipfile
 from typing import Optional
@@ -6,34 +7,47 @@ from typing import Optional
 from tqdm import tqdm
 import geopandas as gpd
 from fastapi.responses import Response, StreamingResponse
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
+from starlette.concurrency import run_in_threadpool
 
 from toolbox.mlos import get_admin_col
-from toolbox.utils import logger
+from toolbox.utils import logger, atimer
 from toolbox.campaign import CampaignDatasets
 from toolbox.tracks_manager.tr import read_tracks
 from toolbox.access.read_mgr import  read_dataset
 from toolbox.access.export_mgr import add_to_archive
 from toolbox.campaign.tracker import settlement_tracking
-from toolbox.models import State, CampaignDay, Extensions
+from toolbox.models import CampaignDay, Extensions
 from toolbox.apps.tracking import h2h_cache
 from toolbox.reporting import PostReport
+from toolbox.dataops import h2h as h2h_checks
+from toolbox.dataops.checks import Report
+from toolbox.job_tracker.context import report_stage
 
 
 logger(log_name='Gridded Validation')
 router = APIRouter()
 
 
+@atimer(title='Data Preparation', display=True)
 async def prepare_datasets(
         settlement_file: UploadFile, tracks_file: UploadFile,
-        extension: Extensions, day: int, mop_up: bool) -> CampaignDatasets:
+        extension: Extensions, day: int, mop_up: bool, report: Optional[Report] = None) -> CampaignDatasets:
+    """Reads and checks both files. The settlement list is checked as soon as it is read, so a
+    list that cannot be used fails before the (slower) tracks upload is processed; warnings go
+    into `report` when one is given."""
 
     dip_data = await read_dataset(settlement_file)
+    report = report if report is not None else Report(h2h_checks.TOOL)
+    h2h_checks.validate_settlements(dip_data, day, report=report)
+    logging.info('Read %d settlements', len(dip_data))
     extension = extension.value if extension else None
     tracks_data: gpd.GeoDataFrame = await read_tracks(tracks_file, extension)
+    h2h_checks.validate_tracks(tracks_data, report=report)
+    logging.info('Read %d valid tracks', len(tracks_data))
 
     campaign_day = CampaignDay(analysis_day=day, is_mop_up=mop_up)
-    datasets = CampaignDatasets(dip_data, tracks_data, campaign_day)
+    datasets = await run_in_threadpool(CampaignDatasets, dip_data, tracks_data, campaign_day)
 
     return datasets
 
@@ -73,10 +87,21 @@ async def h2h_settlement_tracking_reports(job_id: str) -> list[PostReport]:
     return cached.reports
 
 
+def cleanup_file(path: str):
+  """Removes temporary file after the response is sent."""
+  import gc
+  if os.path.exists(path):
+    os.remove(path)
+
+  gc.collect()
+
+
 @router.post('/tracking/gridded', tags=['Tracking'])
 async def h2h_settlement_tracking(
+        background_tasks: BackgroundTasks,
         tracks_path: UploadFile=File(...), dip_file: UploadFile = File(...), analysis_day: int=Form(...),
-        is_mop_up: bool= Form(False), tracks_extension: Optional[Extensions]=Form(None), generate_report: bool = Form(False)) -> Response:
+        is_mop_up: bool= Form(False), tracks_extension: Optional[Extensions]=Form(None),
+        generate_report: bool = Form(False)) -> Response:
 
     """
     Validate Campaign Settlement data and calculate the coverage level of enumeration at the settlement level
@@ -116,20 +141,28 @@ async def h2h_settlement_tracking(
 
     logging.info("Validating Settlements by Grids")
     print('Reading Datasets...')
+    report_stage('Reading settlements and tracks')
+    # Collects the data-check warnings for the X-Data-Warning header; a settlement list or tracks
+    # file the analysis cannot use stops the run here with a message that says what to fix.
+    report = Report(h2h_checks.TOOL)
     datasets = await prepare_datasets(
         dip_file,
         tracks_path,
         tracks_extension,
         analysis_day,
-        is_mop_up
+        is_mop_up,
+        report=report
     )
 
+    settlement_count = len(datasets.settlements)
     state_col = get_admin_col(datasets.settlements, 'state', 'raise')
-    states = datasets.settlements[state_col].str.title().unique().tolist()
-    state_names = [State[state] for state in states]
+    state_names = h2h_checks.resolve_states(datasets.settlements[state_col])
 
     print('Executing Settlement Coverage, Visitation and Time Spent Analysis...')
+    report_stage('Analysing visitation')
+    logging.info('Analysing settlement visitation for day %s', analysis_day)
     validation_data = await settlement_tracking(datasets, state_names, generate_report)
+    h2h_checks.check_output(report, validation_data.settlements, settlement_count)
 
     # Both the settlements DataFrame and the tracks GeoDataFrame are fully
     # computed at this point (settlement_tracking derives them together from
@@ -145,8 +178,12 @@ async def h2h_settlement_tracking(
         dip_filename=dip_file.filename,
     )
 
+    report_stage('Writing results')
+    logging.info('Writing %d result rows to CSV', len(validation_data.settlements))
     csv_buffer = io.StringIO()
-    validation_data.settlements.to_csv(csv_buffer, index=False, encoding='utf-8')
+    await run_in_threadpool(validation_data.settlements.to_csv, csv_buffer, index=False, encoding='utf-8')
+
+    # background_tasks.add_task(cleanup_file, csv_buffer)
 
     return Response(
         content=csv_buffer.getvalue(),
@@ -154,8 +191,10 @@ async def h2h_settlement_tracking(
         headers={
             'Content-Disposition': f'attachment; filename="{dip_file.filename.split(".")[0]}.csv"',
             'X-Job-Id': job_id,
+            **report.headers(),
         },
     )
+
 
 
 @router.get('/tracking/gridded/archive/{job_id}', tags=['Tracking'])
