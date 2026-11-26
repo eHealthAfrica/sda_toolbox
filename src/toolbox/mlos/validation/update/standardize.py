@@ -1,7 +1,7 @@
 import pandas as pd
 from tqdm import tqdm
 from typing import Any
-from functools import cached_property, cache
+import geopandas as gpd
 from fuzzywuzzy import process
 
 from toolbox.models import State, Policy
@@ -71,3 +71,46 @@ def standardize_admin_records(dataset: pd.DataFrame, purpose: Policy):
     dataset.drop_duplicates(subset='unique_code', keep='first', inplace=True)
 
     return dataset
+
+
+def standardize_admin(dataset: gpd.GeoDataFrame | pd.DataFrame, admin: AdminColumns | None) -> gpd.GeoDataFrame | pd.DataFrame:
+    admin = admin if admin else AdminColumns.create_by_search(dataset)
+    admin_columns = admin.__dict__
+    for level, admin_col in admin_columns.items():
+        dataset[admin_col] = dataset[admin_col].str.title().str.replace('_', '-')
+
+    return dataset
+
+
+def standardize_admin_records_to_boundary(dataset: pd.DataFrame, admin: AdminColumns, boundary: pd.DataFrame) -> pd.DataFrame:
+    dataset = standardize_admin(dataset, admin)
+
+    dataset['unique_attribute'] = dataset.apply(
+        lambda row: f"{row[admin.state]}*{row[admin.lga]}", axis=1)
+
+    boundary['unique_admin'] = boundary.apply(
+        lambda row: f"{row['statename']}*{row['lganame']}", axis=1)
+
+    unique_lgas = dataset['unique_attribute'].unique().tolist()
+    state_lgas = boundary["unique_admin"].unique().tolist()
+    lga_renamer = {lga: compare_admin_data_ii(lga, state_lgas) for lga in unique_lgas}
+    dataset['unique_attribute'] = dataset['unique_attribute'].map(lga_renamer)
+    dataset['unique_attribute'] = dataset['unique_attribute'].str.split('*')
+    dataset[admin.lga] = dataset['unique_attribute'].str[-1]
+
+    dataset['unique_attribute'] = dataset.apply(
+        lambda row: f"{'*'.join(row['unique_attribute'])}*{row[admin.ward]}", axis=1)
+
+    boundary['unique_admin'] = boundary.apply(
+        lambda row: f"{row["unique_admin"]}*{row["wardname"]}", axis=1)
+
+    unique_data_ward = dataset['unique_attribute'].unique().tolist()
+    unique_boundary_wards = boundary['unique_admin'].unique().tolist()
+    ward_renamer = {ward: compare_admin_data_ii(ward, unique_boundary_wards) for ward in unique_data_ward}
+    dataset['unique_attribute'] = dataset['unique_attribute'].map(ward_renamer)
+    dataset['unique_attribute'] = dataset['unique_attribute'].str.split('*')
+    dataset[admin.ward] = dataset['unique_attribute'].str[-1]
+
+    cleaned_dataset = dataset.drop(columns='unique_attribute')
+
+    return cleaned_dataset
