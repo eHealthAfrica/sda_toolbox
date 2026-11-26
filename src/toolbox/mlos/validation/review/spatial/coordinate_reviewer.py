@@ -1,8 +1,6 @@
 import logging
-import multiprocessing
 import concurrent.futures
-from functools import partial
-from typing import Literal, Any
+from typing import Any
 from dataclasses import dataclass, field
 
 import rapidfuzz
@@ -10,11 +8,14 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import geopandas as gpd
+import shapely
+from pyproj import Geod
 from fuzzywuzzy import fuzz
-from geopy.distance import geodesic
 from shapely.geometry.base import BaseGeometry
-from shapely.geometry import MultiPolygon, Point, MultiPoint
+from shapely.geometry import MultiPolygon
+from sqlalchemy import text
 
+from toolbox.mlos.validation.update.standardize import standardize_admin
 from toolbox.utils import atimer
 from toolbox.utils.offload import run_heavy
 from toolbox.configs import CONFIG
@@ -84,95 +85,89 @@ class ReviewDataSet:
 
 
 def create_ward_id(admin: AdminColumns)-> str:
-    return f"{admin.state}_{admin.lga}_{admin.ward}"
+    return f"{admin.state}*{admin.lga}*{admin.ward}"
 
 
-def match_settlement(settlement_codes: list[str], search_dataset: ReviewDataSet)->dict[str, dict[str, str|None]] | None:
+def ward_keys(data: pd.DataFrame, admin: AdminColumns) -> list[str]:
+    """The State*LGA*Ward key of every row, each value written with str() (a blank one as "nan"), like the per-row
+    f-string it replaces"""
+    return [f"{state}*{lga}*{ward}" for state, lga, ward in zip(data[admin.state], data[admin.lga], data[admin.ward])]
+
+
+def match_settlement(settlement_codes: list[str], search_name: str, search_codes: list[str]) -> dict[str, dict[str, str | None]] | None:
+    """Best match (at or above THRESHOLD) in `search_codes` for every MLoS code, keyed by the search dataset's name"""
     try:
-        search_result: dict[str, str | None] = {}
-        search_data: list[str] = search_dataset.data[search_dataset.unique_code].tolist()
-        results_array: list[list[int]] = rapidfuzz.process.cdist(                                       # noqa
-            settlement_codes, search_data, scorer=rapidfuzz.fuzz.partial_ratio, workers=6).tolist()
-
-        for settlement, similarity in zip(settlement_codes, results_array):
-            max_similarity = max(similarity)
-            if max_similarity < THRESHOLD:
-                search_result[settlement] = None
-            else:
-                index_max = similarity.index(max_similarity)
-                matched_settlement = search_data[index_max]
-                search_result[settlement] = matched_settlement
-
-        return {search_dataset.name: search_result}
+        scores = rapidfuzz.process.cdist(                                                               # noqa
+            settlement_codes, search_codes, scorer=rapidfuzz.fuzz.partial_ratio, workers=1)
+        best = scores.argmax(axis=1)                    # the first best match, as list.index() picked it before
+        best_scores = scores[np.arange(len(settlement_codes)), best]
+        search_result: dict[str, str | None] = {
+            settlement: (search_codes[index] if score >= THRESHOLD else None)
+            for settlement, index, score in zip(settlement_codes, best, best_scores)
+        }
+        return {search_name: search_result}
     except Exception as e:
-        print(f'Error Encountered: {e}')
-        pass
-
-
-def find_and_match_settlement(focal_datasets: list[ReviewDataSet]):
-    """Find Match and possible close matches in the MLoS against comparison datasets"""
-
-    focal_mlos: ReviewDataSet = list(filter(lambda d: d.name=='mlos', focal_datasets))[0]
-    if focal_mlos.data.empty:
+        logging.warning(f'Settlement matching against {search_name} failed: {e}')
         return None
 
-    focal_mlos_settlements = focal_mlos.data[focal_mlos.unique_code].tolist()
-    settlement_matcher = partial(match_settlement, focal_mlos_settlements)
-    search_datasets = [
-        dataset for dataset in focal_datasets
-        if dataset.name!='mlos' and dataset.data.empty is False
-    ]
 
+def build_ward_index(dataset: ReviewDataSet, ward_ids: list[str]) -> dict[str, np.ndarray]:
+    """Row positions of `dataset` that belong to each ward in `ward_ids` (State*LGA*Ward).
+
+    A row belongs to a ward when its ward name scores >= WARD_THRESHOLD and its LGA name >= LGA_THRESHOLD
+    (partial_ratio), the rule the review has always used. Each distinct LGA/ward pair in the dataset is scored once
+    against every ward, instead of fuzzy-scoring every row of a full copy of the dataset once per ward."""
+    data = dataset.data
+    if data.empty or not ward_ids:
+        return {}
+
+    admin = dataset.admin_columns
+    lga_values = data[admin.lga].fillna('').astype(str).to_numpy()
+    ward_values = data[admin.ward].fillna('').astype(str).to_numpy()
+    groups: dict[tuple[str, str], np.ndarray] = data.groupby([lga_values, ward_values], sort=False).indices
+    pairs = list(groups)
+
+    targets = [ward_id.split('*') for ward_id in ward_ids]
+    ward_scores = rapidfuzz.process.cdist(                                                               # noqa
+        [ward for _, ward in pairs], [ward for _, _, ward in targets], scorer=rapidfuzz.fuzz.partial_ratio, workers=-1)
+
+    lga_scores = rapidfuzz.process.cdist(                                                                # noqa
+        [lga for lga, _ in pairs], [lga for _, lga, _ in targets], scorer=rapidfuzz.fuzz.partial_ratio, workers=-1)
+
+    passing = (ward_scores >= WARD_THRESHOLD) & (lga_scores >= LGA_THRESHOLD)
+
+    index: dict[str, np.ndarray] = {}
+    for position, ward_id in enumerate(ward_ids):
+        hits = np.flatnonzero(passing[:, position])
+        if hits.size:
+            # Sorted so the rows keep the dataset's order: ties in match_settlement still go to the first row.
+            index[ward_id] = np.sort(np.concatenate([groups[pairs[hit]] for hit in hits]))
+
+    return index
+
+
+def process_ward_level_data(
+        ward_id: str, datasets: list[ReviewDataSet], ward_indexes: dict[str, dict[str, np.ndarray]]) -> dict | None:
+    """Matches the MLoS settlements of one ward against the same ward's records in every other source"""
+    logging.info(f'Cross-Referencing Settlements within {' '.join(ward_id.split("*"))} Administrative Locations')
+    mlos: ReviewDataSet = next(ds for ds in datasets if ds.name == 'mlos')
+    mlos_rows = ward_indexes['mlos'].get(ward_id)
+    if mlos_rows is None:
+        return None
+
+    mlos_codes = mlos.data[mlos.unique_code].iloc[mlos_rows].tolist()
     search_results = {}
-    with multiprocessing.Pool() as pool:
-        results = pool.map(settlement_matcher, search_datasets)
+    for dataset in datasets:
+        rows = ward_indexes[dataset.name].get(ward_id) if dataset.name != 'mlos' else None
+        if rows is None:
+            continue
 
-        for output in results:
+        search_codes = dataset.data[dataset.unique_code].iloc[rows].tolist()
+        output = match_settlement(mlos_codes, dataset.name, search_codes)
+        if output:
             search_results.update(output)
 
     return search_results
-
-
-def filter_dataset(dataset: pd.DataFrame | gpd.GeoDataFrame, admin: AdminColumns, ward_code: str):
-    state, lga, ward = ward_code.split("_")
-    logging.info(f'Filtering Datasets to {state} State {lga} LGA and {ward}')
-    dataset['ward_score'] = rapidfuzz.process.cdist(dataset[admin.ward], [ward], scorer=rapidfuzz.fuzz.partial_ratio) # noqa
-    dataset['lga_score'] = rapidfuzz.process.cdist(dataset[admin.lga], [lga], scorer=rapidfuzz.fuzz.partial_ratio) # noqa
-
-    mask = (
-        (dataset['ward_score']>=WARD_THRESHOLD)  &
-        (dataset['lga_score']>=LGA_THRESHOLD)
-    )
-
-    focal_dataset = dataset[mask]
-    focal_dataset.drop(columns=['ward_score', 'lga_score'], inplace=True)
-    return focal_dataset
-
-
-def process_focal_datasets(review_datasets: list[ReviewDataSet],  focal_ward_id: str)-> dict:
-    focal_datasets = []
-    logging.info(f'Cross-Referencing Settlements within {focal_ward_id.split("_")} Administrative Locations')
-    for review_dataset in review_datasets:
-        dataset_copy = review_dataset.data.copy()
-        focal_dataset = filter_dataset(dataset_copy, review_dataset.admin_columns, focal_ward_id)
-        filtered_data: ReviewDataSet = ReviewDataSet(
-            name=review_dataset.name,
-            data=focal_dataset,
-            settlement_col=review_dataset.settlement_col,
-            admin_columns=review_dataset.admin_columns,
-            geo_col=review_dataset.geo_col,
-        )
-        focal_datasets.append(filtered_data)
-
-    focal_datasets_result = find_and_match_settlement(focal_datasets)
-    return focal_datasets_result
-
-
-def process_ward_level_data(boundary_record: tuple[str, MultiPolygon], datasets: list[ReviewDataSet]) -> dict:
-    ward_id, geometry = boundary_record
-    datasets_copy = list(datasets)
-    focal_dataset_result = process_focal_datasets(datasets_copy, ward_id)
-    return focal_dataset_result
 
 
 def convert_dict_to_df(data: dict, out_col: str)->pd.DataFrame:
@@ -210,22 +205,16 @@ def prepare_result(results: list[dict], sources: list[str]) -> pd.DataFrame:
 
 
 def subset_datasets(places_data: pd.DataFrame, admin: AdminColumns, subset_locations: list) -> pd.DataFrame:
-    places_data['admin_id'] = places_data.apply(
-        lambda row: f"{row[admin.state]}_{row[admin.lga]}_{row[admin.ward]}", axis=1)
-
-    places_data = places_data[places_data['admin_id'].isin(subset_locations)]
-    places_data.drop(columns=['admin_id'], inplace=True)
-    return places_data
+    return places_data.loc[pd.Index(ward_keys(places_data, admin)).isin(subset_locations)]
 
 
-def retrieve_ward_geometries(states: list[str], places: list[str]) -> tuple[list[tuple[str, MultiPolygon]],ReviewDataSet]:
+def retrieve_ward_geometries(states: list[str], places: list[str]) -> tuple[list[tuple[str, MultiPolygon]], gpd.GeoDataFrame]:
     logging.info('Retrieving Ward Boundary Data and Converting to Ward Geometries')
     boundary_data: gpd.GeoDataFrame = ReadDBData(CONFIG['DATASETS']['ward_boundary'], True).read_data({'statename': states})
     admin_info = boundary_data.loc[:, ['statename', 'lganame', 'wardname', 'geometry']].to_records(index=False)
-    ward_geometry_map: list[tuple[str, MultiPolygon]] = [(f"{state}_{lga}_{ward}",geometry) for state, lga, ward, geometry in admin_info]
+    ward_geometry_map: list[tuple[str, MultiPolygon]] = [(f"{state}*{lga}*{ward}",geometry) for state, lga, ward, geometry in admin_info]
     ward_geometry_map = list(filter(lambda m: m[0] in places, ward_geometry_map))
-    osm_dataset = retrieve_osm_data(boundary_data, places)
-    return ward_geometry_map, osm_dataset
+    return ward_geometry_map, boundary_data
 
 
 def enrich_dataset(target_data: gpd.GeoDataFrame, source_data: gpd.GeoDataFrame, places: list[str]):
@@ -233,18 +222,43 @@ def enrich_dataset(target_data: gpd.GeoDataFrame, source_data: gpd.GeoDataFrame,
     enriched_data = target_data.sjoin(source_data[['wardname', 'lganame', 'statename', 'geometry']], how='left', predicate='intersects', lsuffix="_source")
     added_cols = [col for col in enriched_data.columns if col.__contains__('_source')] + ['index_right']
     enriched_data.drop(added_cols, axis=1, inplace=True)
-    enriched_data['ward_id'] = enriched_data.apply(
-        lambda row: f"{row['statename']}_{row['lganame']}_{row['wardname']}", axis=1)
+    # The same State*LGA*Ward key as `places` (it was still built with "_", so no OSM record ever matched a ward).
+    enriched_data['ward_id'] = enriched_data['statename'] + '*' + enriched_data['lganame'] + '*' + enriched_data['wardname']
     enriched_data = enriched_data.loc[enriched_data['ward_id'].isin(places)]
     return enriched_data
+
+
+def read_osm_places(boundary_data: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Named OSM places inside the bounding box of the given ward boundaries.
+
+    The box is applied in PostGIS (osm has a GiST index on its geometry), so only the area under review is read
+    instead of the whole national table."""
+    reader = ReadDBData(CONFIG['DATASETS']['osm'], True)
+    geom_col = reader.geo_col
+    min_x, min_y, max_x, max_y = boundary_data.to_crs(4326).total_bounds
+    query = text(
+        f'SELECT * FROM {reader.db_table} WHERE name IS NOT NULL '
+        f'AND {geom_col} && ST_MakeEnvelope(:min_x, :min_y, :max_x, :max_y, 4326)')
+    params = {'min_x': float(min_x), 'min_y': float(min_y), 'max_x': float(max_x), 'max_y': float(max_y)}
+    try:
+        with reader.engine.connect() as conn:
+            data: gpd.GeoDataFrame = gpd.read_postgis(sql=query, con=conn, geom_col=geom_col, params=params)
+    finally:
+        reader.engine.dispose()
+
+    if geom_col != 'geometry':
+        data = data.rename_geometry('geometry')
+
+    return data.to_crs(boundary_data.crs) if boundary_data.crs and data.crs else data
 
 
 def retrieve_osm_data(boundary_data: gpd.GeoDataFrame, places: list[str]) -> ReviewDataSet:
     logging.info('Retrieving OSM Data')
     osm_admin = AdminColumns('statename', 'lganame', 'wardname', 'name')
     try:
-        osm_place = ReadDBData(CONFIG['DATASETS']['osm'], True).read_data()
-        osm_place = osm_place.loc[osm_place['name'].notna()]
+        ward_keys = boundary_data['statename'] + '*' + boundary_data['lganame'] + '*' + boundary_data['wardname']
+        reviewed_wards = boundary_data.loc[ward_keys.isin(places)]
+        osm_place = read_osm_places(reviewed_wards if not reviewed_wards.empty else boundary_data)
         enriched_osm = enrich_dataset(osm_place, boundary_data, places)
         enriched_osm = enriched_osm.loc[enriched_osm['wardname'].notna()]
         enriched_osm['longitude'] = enriched_osm.geometry.x
@@ -260,13 +274,18 @@ def retrieve_osm_data(boundary_data: gpd.GeoDataFrame, places: list[str]) -> Rev
 
 def run_settlement_similarity_check(admin_map: list[tuple[str, MultiPolygon]], datasets: list[ReviewDataSet]) -> pd.DataFrame:
     logging.info('Running Settlement Similarity Check')
+    ward_ids = [ward_id for ward_id, _ in admin_map]
+    logging.info('Indexing the records of every dataset by ward')
+    ward_indexes = {dataset.name: build_ward_index(dataset, ward_ids) for dataset in datasets}
+
     ward_level_results = []
+    # rapidfuzz releases the GIL while it scores, so the threads match wards in parallel (no process pool needed).
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = [
-            executor.submit(process_ward_level_data, mapping, datasets)
-            for mapping in admin_map]
+            executor.submit(process_ward_level_data, ward_id, datasets, ward_indexes)
+            for ward_id in ward_ids]
 
-        for future in tqdm(concurrent.futures.as_completed(futures), total=len(admin_map), desc="Processing", unit='wards'):
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(ward_ids), desc="Processing", unit='wards'):
             result = future.result()
             ward_level_results.append(result)
 
@@ -281,129 +300,88 @@ def merge_and_cleanup(settlement_data: gpd.GeoDataFrame, datasets: list[ReviewDa
         if dataset.name == 'mlos':
             continue
 
-        new_code = f"{dataset.unique_code}_{dataset.name}"
-        dataset.data.rename(columns={dataset.unique_code: new_code}, inplace=True)
-        settlement_data = settlement_data.merge(
-            dataset.data[['geometry', new_code]], left_on=dataset.name, right_on=new_code,
-            suffixes=(None, f'_{dataset.name}'), how='left')
+        geom_col = f'geometry_{dataset.name}'
+        if dataset.name not in settlement_data.columns:
+            # No ward of this source produced a result, so the similarity check left no column for it.
+            settlement_data[dataset.name] = None
 
-        settlement_data[f'geometry_{dataset.name}'] = settlement_data.apply(
-            lambda row: row[f'geometry_{dataset.name}'] if pd.notna(row[dataset.name]) else np.nan, axis=1)
-
-        settlement_data.drop(columns=[new_code], inplace=True)
+        # One row per code, and none for blank codes. pandas joins a blank key to every blank key, so each MLoS row
+        # with no match used to pick up every blank-coded row of the source, and a repeated code (common in OSM)
+        # copied the MLoS row once per repeat. drop_duplicates(keep='first') later kept only the first of those rows,
+        # which is the row kept here.
+        source = pd.DataFrame({
+            dataset.name: dataset.data[dataset.unique_code].to_numpy(dtype=object),
+            geom_col: dataset.data.geometry.to_numpy(),
+        })
+        source = source.loc[source[dataset.name].notna()].drop_duplicates(subset=dataset.name, keep='first')
+        settlement_data[dataset.name] = settlement_data[dataset.name].astype(object)
+        settlement_data = settlement_data.merge(source, on=dataset.name, how='left')
 
     return settlement_data
 
 
-def evaluator(row: pd.Series, target_source: str, ind_source: str):
-    source_geom = row['geometry']
-    ind_geom = row[f'geometry_{ind_source}']
-    source_name = row[target_source]
-    ind_name = row[ind_source]
-
-    if pd.isna([source_name, ind_name]).any():
-        return None
-
-    similarity = fuzz.partial_ratio(source_name, ind_name)
-    distance = calculate_distance(source_geom, ind_geom)
-
-    return Response(source=ind_source, unique_code=ind_name, similarity=similarity, distance=distance)
+TRACKS_DISTANCE = 0.0027000270      # degrees (about 300 m): how close to a GTS track counts as "near tracks"
+GEOD = Geod(ellps='WGS84')          # the same WGS-84 geodesic geopy.distance.geodesic measures
 
 
-def get_coord(coord: Point | MultiPoint, ax: Literal['x', 'y']) -> float:
-    try:
-        if coord is None:
-            return np.nan
+def as_points(geometries: pd.Series) -> np.ndarray:
+    """The geometries as a shapely array: a MultiPoint becomes its centroid and anything that is not a geometry None"""
+    values = np.array([geom if isinstance(geom, BaseGeometry) else None for geom in geometries], dtype=object)
+    multi = shapely.get_type_id(values) == shapely.GeometryType.MULTIPOINT
+    if multi.any():
+        values[multi] = shapely.centroid(values[multi])
 
-        if isinstance(coord, MultiPoint):
-            coord = coord.centroid
-
-        if ax == 'x':
-            return coord.x
-
-        return coord.y
-    except AttributeError:
-        return np.nan
+    return values
 
 
-def intersects_grid3_extent(ind_geom: Point|MultiPoint|None, grid3_extent: BaseGeometry) -> bool|None:
-    try:
-        if ind_geom is None or pd.isna(ind_geom):
-            return None
+def spatial_flag(points: np.ndarray, layer: gpd.GeoDataFrame, predicate: str, **kwargs) -> np.ndarray:
+    """True/False for each point by whether it meets `predicate` against any feature of `layer`; None if no point.
 
-        if pd.isna(grid3_extent) or grid3_extent is None:
-            return None
+    Uses the layer's spatial index, so a point is only tested against the features near it. The checks used to test
+    every point against one geometry merged from the whole layer, which is slow to build and to test against."""
+    result = np.full(len(points), None, dtype=object)
+    present = np.flatnonzero(pd.notna(points))
+    flags = np.zeros(len(present), dtype=bool)
+    # A point with NaN coordinates is False, as the per-point check returned; the index query stops on it.
+    queryable = np.flatnonzero(~np.isnan(shapely.get_x(points[present])))
+    if len(queryable) and layer is not None and not layer.empty:
+        hit_rows, _ = layer.sindex.query(points[present][queryable], predicate=predicate, **kwargs)
+        flags[queryable[np.unique(hit_rows)]] = True
 
-        if isinstance(ind_geom, MultiPoint):
-            ind_geom = ind_geom.centroid
-
-        return ind_geom.within(grid3_extent)
-    except (TypeError, AttributeError):
-        return None
-
-
-def close_to_tracks(ind_geom: Point|MultiPoint|None, tracks_data: BaseGeometry) -> bool|None:
-    try:
-        if ind_geom is None:
-            return None
-
-        if pd.isna(tracks_data):
-            return None
-
-        if isinstance(ind_geom, MultiPoint):
-            ind_geom = ind_geom.centroid
-
-        return ind_geom.dwithin(tracks_data, distance=0.0027000270)
-
-    except (TypeError, AttributeError):
-        return None
+    result[present] = flags
+    return result
 
 
 def evaluate_settlements(settlement: gpd.GeoDataFrame, code_col: str, ind_datasets: list[str],
                          tracks_data: gpd.GeoDataFrame, grid3_extent: gpd.GeoDataFrame) -> pd.DataFrame:
-    print('Merging Datasets....')
-    merged_extent: BaseGeometry = grid3_extent.geometry.union_all()
-    merged_tracks: BaseGeometry = tracks_data.geometry.union_all()
-
     print('Starting Evaluation...')
     logging.info('Starting Evaluation for Intersection with Grid3 and proximity to Tracks...')
+    mlos_points = as_points(settlement['geometry'])
+    mlos_x, mlos_y = shapely.get_x(mlos_points), shapely.get_y(mlos_points)
+    mlos_codes = settlement[code_col].to_numpy(dtype=object)
+
     for ind_dataset in tqdm(ind_datasets, desc='Evaluating and Expanding Results', unit='datasets'):
-        settlement[f"{ind_dataset}_response"] = settlement.apply(evaluator, args=(code_col, ind_dataset,), axis=1)
-        settlement[f'{ind_dataset}_similarity'] = settlement[f'{ind_dataset}_response'].apply(
-            lambda x: x.similarity if pd.notna(x) else np.nan)
+        points = as_points(settlement[f'geometry_{ind_dataset}'])
+        x, y = shapely.get_x(points), shapely.get_y(points)
+        ind_codes = settlement[ind_dataset].to_numpy(dtype=object)
+        named = pd.notna(mlos_codes) & pd.notna(ind_codes)        # both names known: similarity and distance apply
 
-        settlement[f'{ind_dataset}_distance'] = settlement[f'{ind_dataset}_response'].apply(
-            lambda x: x.distance if pd.notna(x) else np.nan)
+        similarity = np.full(len(settlement), np.nan)
+        similarity[named] = [fuzz.partial_ratio(a, b) for a, b in zip(mlos_codes[named], ind_codes[named])]
+        distance = np.full(len(settlement), np.nan)
+        if named.any():
+            distance[named] = GEOD.inv(mlos_x[named], mlos_y[named], x[named], y[named])[2]
 
-        settlement[f'{ind_dataset}_grid3'] = settlement[f'geometry_{ind_dataset}'].apply(
-            intersects_grid3_extent, args=(merged_extent,))
-
-        settlement[f'{ind_dataset}_near_tracks'] = settlement[f'geometry_{ind_dataset}'].apply(
-            close_to_tracks, args=(merged_tracks,))
-
-        settlement[f'{ind_dataset}_latitude'] = settlement[f'geometry_{ind_dataset}'].apply(get_coord, args=('y',))
-        settlement[f'{ind_dataset}_longitude'] = settlement[f'geometry_{ind_dataset}'].apply(get_coord, args=('x',))
-        settlement.drop(columns=[f'{ind_dataset}_response', f'geometry_{ind_dataset}'], inplace=True)
+        settlement[f'{ind_dataset}_similarity'] = similarity
+        settlement[f'{ind_dataset}_distance'] = distance
+        settlement[f'{ind_dataset}_grid3'] = spatial_flag(points, grid3_extent, 'within')
+        settlement[f'{ind_dataset}_near_tracks'] = spatial_flag(points, tracks_data, 'dwithin', distance=TRACKS_DISTANCE)
+        settlement[f'{ind_dataset}_latitude'] = y
+        settlement[f'{ind_dataset}_longitude'] = x
+        settlement.drop(columns=[f'geometry_{ind_dataset}'], inplace=True)
 
     settlement.drop(columns=['geometry'], inplace=True)
     return settlement
-
-
-def calculate_distance(geometry1: Point|MultiPoint, geometry2: Point|MultiPoint):
-    if isinstance(geometry1, MultiPoint):
-        # Todo: convert to Point
-        geometry1 = geometry1.centroid
-
-    if isinstance(geometry2, MultiPoint):
-        geometry2 = geometry2.centroid
-
-    geom1 = geometry1.y, geometry1.x
-    geom2 = geometry2.y, geometry2.x
-    if pd.isna(list(geom2)).any() or pd.isna(list(geom1)).any():
-        return np.nan
-
-    distance = geodesic(geom1, geom2).meters
-    return distance
 
 
 def order_cols(original_cols: list[str], review_sources: list[str]) -> list[str]:
@@ -420,15 +398,8 @@ def order_cols(original_cols: list[str], review_sources: list[str]) -> list[str]
 def extract_places(settlement_data: pd.DataFrame) -> list[str]:
 
     logging.info('Extracting Unique Ward Location from Settlement Data...')
-    settlement_data_copy = settlement_data.copy()
-    admin = AdminColumns.create_by_search(settlement_data_copy)
-    settlement_data_copy['unique_ward'] = settlement_data_copy.apply(
-        lambda row: f"{row[admin.state]}_{row[admin.lga]}_{row[admin.ward]}", axis=1
-    )
-
-    unique_wards = settlement_data_copy['unique_ward'].unique().tolist()
-
-    return unique_wards
+    admin = AdminColumns.create_by_search(settlement_data)
+    return list(dict.fromkeys(ward_keys(settlement_data, admin)))      # unique, in first-seen order
 
 
 def create_review_datasets(
@@ -442,6 +413,8 @@ def create_review_datasets(
         admin_cols = AdminColumns.create_by_search(data)
         if data_name != 'mlos':
             data = subset_datasets(data, admin_cols, places)
+
+        data = standardize_admin(data, admin_cols)
         geo_cols = GeomColumns.get_geom_cols(data, True)
         geo_data = convert_to_geodata(data, geo_cols)
         dataset: ReviewDataSet = ReviewDataSet(
@@ -453,10 +426,11 @@ def create_review_datasets(
 
         datasets.append(dataset)
 
-    geom_map, osm_dataset = retrieve_ward_geometries(states, places)
+    geom_map, boundary_data = retrieve_ward_geometries(states, places)
     if use_osm:
+        # OSM is only read when it is wanted: it used to be read and spatially joined on every run.
         logging.info('OSM Data Included')
-        datasets.append(osm_dataset)
+        datasets.append(retrieve_osm_data(boundary_data, places))
 
     return datasets, geom_map
 
@@ -482,6 +456,10 @@ def _review_settlement_coordinates(
     states = settlements[state_col].str.title().unique().tolist()
     datasets, geom_map = create_review_datasets(source_datasets, states, analysis_wards, include_osm)
     sources = [ds.name for ds in datasets if ds.name != 'mlos']
+    # A ward is only reviewed if its State_LGA_Ward name is found in the ward boundary layer; say which were not
+    # (the DataOps checks report it, see toolbox/dataops/coord_review.py).
+    found_wards = {ward_id for ward_id, _ in geom_map}
+    unmatched_wards = [ward for ward in analysis_wards if ward not in found_wards]
 
     compiled = run_settlement_similarity_check(geom_map, datasets)
     settlement_ds: ReviewDataSet = list(filter(lambda ds: ds.name=='mlos', datasets))[0]
@@ -497,6 +475,7 @@ def _review_settlement_coordinates(
     ordered_columns = order_cols(settlement_ds.output_columns, sources)
     ordered_columns = [col for col in ordered_columns if col in reviewed_settlements.columns]
     reviewed_settlements = reviewed_settlements.loc[:, ordered_columns]
+    reviewed_settlements.attrs['ward_coverage'] = {'wards': len(analysis_wards), 'unmatched': unmatched_wards}
 
     return reviewed_settlements
 
@@ -512,13 +491,13 @@ async def review_settlement_coordinates(
 if __name__ == '__main__':
     import openpyxl
     import asyncio
-    folder = 'C:\\Workspace\\NEOC\\MIGRANT MAPPING\\SEPTEMEBR ROUND'
-    baseline_settlement_file = f"{folder}\\Validated Migrant Settlements_States.xlsx"
-    baseline_df = pd.read_excel(baseline_settlement_file)
-    cols = ['unique_code', 'STATE', 'LGA', 'WARD', 'SETTLEMENTS', 'LATITUDE', 'LONGITUDE']
-    # baseline_df = baseline_df.loc[baseline_df['lga_name'].str.contains('Fakai'), cols]
-    tracks_data = gpd.read_file(fr"{folder}\GIS\tracks.gpkg")
-    previous_camp_file = fr"{folder}\Submissions\September 2026 Nomadic Vaccination Submission Datasets.xlsx"
+    folder = 'C:\\Workspace\\NEOC\\NIPDs\\NOV ROUND\\Analysis'
+    baseline_settlement_file = f"{folder}\\20261023_Final Settlements List for November 2026 Campaign_v9.csv"
+    baseline_df = pd.read_csv(baseline_settlement_file)
+    # cols = ['unique_code', 'STATE', 'LGA', 'WARD', 'SETTLEMENTS', 'LATITUDE', 'LONGITUDE']
+    baseline_df = baseline_df.loc[baseline_df['State'].str.lower()=='kaduna']
+    tracks_data = gpd.read_file(f"{folder}\\GIS\\Tracks.gpkg")
+    previous_camp_file = fr"{folder}\Submissions\November 2026 NIPDs Campaign Submission v3.xlsx"
     rounds = openpyxl.load_workbook(previous_camp_file).sheetnames
     campaign_datasets: dict[str, pd.DataFrame] = {}
     for camp_round in tqdm(rounds, desc='Reading Datasets', total=len(rounds)):
